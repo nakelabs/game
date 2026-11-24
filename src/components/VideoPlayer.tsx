@@ -25,23 +25,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       prewarmedRef.current = true;
       onPrewarm();
     }
-    if (videoRef.current) {
-      videoRef.current.pause();
-    }
     onVideoEnd();
+    // Pause video only after the 300ms crossfade completes so the video remains in motion during the dissolve!
+    window.setTimeout(() => {
+      if (videoRef.current) {
+        videoRef.current.pause();
+      }
+    }, 320);
   };
 
   const handleTimeUpdate = () => {
     const videoEl = videoRef.current;
-    if (!videoEl || prewarmedRef.current) return;
+    if (!videoEl || completedRef.current) return;
 
-    if (
-      Number.isFinite(videoEl.duration) &&
-      videoEl.duration > 0 &&
-      videoEl.duration - videoEl.currentTime <= 0.4
-    ) {
-      prewarmedRef.current = true;
-      onPrewarm();
+    if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
+      const remaining = videoEl.duration - videoEl.currentTime;
+      if (!prewarmedRef.current && remaining <= 1.2) {
+        prewarmedRef.current = true;
+        onPrewarm();
+      }
+      // Trigger cross-dissolve handoff slightly before the final frame so there is zero pause or black hitch!
+      if (remaining <= 0.16) {
+        triggerHandoff();
+      }
     }
   };
 
@@ -72,9 +78,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   return (
     <div
-      className={`absolute inset-0 z-30 flex items-center justify-center overflow-hidden transition-opacity duration-200 ${
+      className={`absolute inset-0 z-30 flex items-center justify-center overflow-hidden transition-opacity duration-300 ease-out ${
         isPlaying && !isFadingOut
-          ? 'opacity-100 bg-black'
+          ? 'opacity-100'
           : 'opacity-0 pointer-events-none'
       }`}
     >

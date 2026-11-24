@@ -15,7 +15,7 @@ export const App: React.FC = () => {
 
   const handleStartDelivery = useCallback(() => {
     soundFX.playSwerve(); // Unlocks Web Audio API context on user gesture
-    setIsPrewarmed(false);
+    setIsPrewarmed(true); // Mount and pre-render the 3D highway canvas immediately behind the intro video
     setPhase('VIDEO');
   }, []);
 

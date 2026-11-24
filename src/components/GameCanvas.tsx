@@ -125,7 +125,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     const syncCanvasSize = () => {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
       const rect = canvas.getBoundingClientRect();
       const targetW = Math.max(320, Math.round((rect.width || window.innerWidth) * dpr));
       const targetH = Math.max(320, Math.round((rect.height || window.innerHeight) * dpr));
@@ -137,6 +137,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
       const ctx = canvas.getContext('2d');
       if (ctx && engineRef.current) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         engineRef.current.render(ctx);
       }
     };
@@ -334,9 +336,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         className="w-full h-full block"
       />
 
-      {/* Clean, Single-Line Top HUD Bar */}
-      {isActive && (
-        <div className="absolute inset-x-0 top-0 z-10 p-3 sm:p-4 pointer-events-none flex flex-col items-center gap-2">
+      {/* Clean, Single-Line Top HUD Bar (Fades in smoothly on video-to-game handoff) */}
+      <div
+        className={`absolute inset-x-0 top-0 z-10 p-3 sm:p-4 pointer-events-none flex flex-col items-center gap-2 transition-opacity duration-300 ${
+          isActive ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
           <div className="w-full max-w-2xl flex items-center justify-between bg-[#0D0C10]/85 backdrop-blur-md border border-white/15 rounded-full px-4 py-1.5 sm:px-6 sm:py-2 shadow-lg">
             {/* Left: Distance & Stage */}
             <div className="flex items-center gap-2">
@@ -419,8 +424,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               </div>
             )}
           </div>
-        </div>
-      )}
+      </div>
 
       {/* Brief Auto-Fading Controls Toast at Run Start */}
       {isActive && showControlsHint && !hud.isGameOver && (
@@ -432,8 +436,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       )}
 
       {/* Minimalist Bottom Action Pills: Wheelie 2X (Left) & Horn Blast (Right) */}
-      {isActive && !hud.isGameOver && (
-        <div className="absolute inset-x-0 bottom-4 sm:bottom-6 z-10 px-4 sm:px-8 flex items-center justify-between pointer-events-none max-w-2xl mx-auto">
+      {!hud.isGameOver && (
+        <div
+          className={`absolute inset-x-0 bottom-4 sm:bottom-6 z-10 px-4 sm:px-8 flex items-center justify-between pointer-events-none max-w-2xl mx-auto transition-opacity duration-300 ${
+            isActive ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
           {/* Hold for 2X Wheelie Pill */}
           <button
             type="button"

@@ -1066,20 +1066,20 @@ export class AgberoGameEngine {
     this.currentWaveSpacing = 660 - difficultyProgress * 245;
 
     const frameScroll = this.currentScrollSpeed * safeDt;
-    this.roadScrollOffset = (this.roadScrollOffset + frameScroll) % 120;
-    this.barrierScrollOffset = (this.barrierScrollOffset + frameScroll) % 96;
-    this.asphaltGrainOffset = (this.asphaltGrainOffset + frameScroll) % 240;
-    this.sceneryScrollOffset = (this.sceneryScrollOffset + frameScroll) % 720;
+    // Continuous unwrapped scroll accumulators prevent any modular jump / road snapping in 3D!
+    this.roadScrollOffset += frameScroll;
+    this.barrierScrollOffset += frameScroll;
+    this.asphaltGrainOffset += frameScroll;
+    this.sceneryScrollOffset += frameScroll;
 
-    // Smooth Dynamic Camera FOV Zoom, Chase-Cam Lateral Parallax & Banking Tilt
-    const targetZoom = isBoosting ? 0.935 : 1.0 - difficultyProgress * 0.03;
-    this.cameraZoom += (targetZoom - this.cameraZoom) * Math.min(1, 5.5 * safeDt);
+    // Steady, Eye-Friendly 3D Chase Camera (Zero dizzying horizon roll or constant zoom breathing)
+    const targetZoom = isBoosting ? 0.965 : 1.0;
+    this.cameraZoom += (targetZoom - this.cameraZoom) * Math.min(1, 3.5 * safeDt);
 
-    const targetParallaxX = (ROAD_CENTER_X - this.player.x) * 0.16;
-    this.cameraParallaxX += (targetParallaxX - this.cameraParallaxX) * Math.min(1, 8 * safeDt);
+    const targetParallaxX = (ROAD_CENTER_X - this.player.x) * 0.08;
+    this.cameraParallaxX += (targetParallaxX - this.cameraParallaxX) * Math.min(1, 6.5 * safeDt);
 
-    const targetBank = -this.player.tiltAngle * 0.055;
-    this.cameraBankAngle += (targetBank - this.cameraBankAngle) * Math.min(1, 9 * safeDt);
+    this.cameraBankAngle = 0;
 
     if (isActive) {
       const metersDelta = frameScroll * 0.055;
@@ -1438,14 +1438,24 @@ export class AgberoGameEngine {
         if (obs.blinkerTimer > 0) {
           obs.blinkerTimer = Math.max(0, obs.blinkerTimer - safeDt);
           if (obs.blinkerTimer === 0) {
-            // Check if target lane is still open before committing to the lane change
+            // Check if target lane is open AND ensure switching won't close the last open escape lane across all 3 lanes!
             const targetBlocked = this.obstacles.some(
               (other) =>
                 other.id !== obs.id &&
                 (other.lane === obs.targetLane || other.targetLane === obs.targetLane) &&
-                Math.abs(other.y - obs.y) < 230
+                Math.abs(other.y - obs.y) < 340
             );
-            if (!targetBlocked) {
+            const otherThirdLane = ([0, 1, 2] as LaneIndex[]).find(
+              (l) => l !== obs.lane && l !== obs.targetLane
+            )!;
+            const thirdLaneBlockedNearby = this.obstacles.some(
+              (other) =>
+                other.id !== obs.id &&
+                (other.lane === otherThirdLane || other.targetLane === otherThirdLane) &&
+                Math.abs(other.y - obs.y) < 380
+            );
+
+            if (!targetBlocked && !thirdLaneBlockedNearby) {
               obs.isSwitchingLane = true;
               obs.lane = obs.targetLane;
               soundFX.playDanfoHorn();
@@ -1738,11 +1748,22 @@ export class AgberoGameEngine {
       // Drop hazard barricade / market crate from rear of Boss Danfo
       this.bossDanfo.throwTimer -= dt;
       if (this.bossDanfo.throwTimer <= 0) {
-        this.bossDanfo.throwTimer = 1.75;
+        this.bossDanfo.throwTimer = 1.95;
         const dropLane = this.bossDanfo.lane;
-        // Ensure at least 1 lane remains open when Boss drops a crate
-        const blockedNearTop = this.obstacles.filter((o) => o.y < 320).length;
-        if (blockedNearTop < 2) {
+        const dropY = this.bossDanfo.y + 100;
+        // Guarantee at least one adjacent escape lane is completely clear around dropY!
+        const occupiedLanesNearDrop = new Set<number>();
+        for (const o of this.obstacles) {
+          if (Math.abs(o.y - dropY) < 340) {
+            occupiedLanesNearDrop.add(o.lane);
+            occupiedLanesNearDrop.add(o.targetLane);
+          }
+        }
+        if (this.vipConvoy.active) {
+          occupiedLanesNearDrop.add(this.vipConvoy.lane);
+        }
+
+        if (!occupiedLanesNearDrop.has(dropLane) && occupiedLanesNearDrop.size < 2) {
           this.obstacles.push({
             id: this.nextObstacleId++,
             type: 'BARRICADE',
@@ -1753,10 +1774,10 @@ export class AgberoGameEngine {
             blinkerTimer: 0,
             isSwitchingLane: false,
             hasSwitchedLane: false,
-            y: this.bossDanfo.y + 100,
+            y: dropY,
             width: 112,
             height: 60,
-            speedMultiplier: 0.92,
+            speedMultiplier: 0.78,
             passed: false,
             nearMissed: false,
             label: 'BOSS CRATE',
@@ -1814,7 +1835,7 @@ export class AgberoGameEngine {
   }
 
   private enforceTrafficSpacing(_dt: number) {
-    const minSameLaneGap = 215;
+    const minSameLaneGap = 245;
     for (let lane = 0; lane < 3; lane++) {
       const laneObs = this.obstacles
         .filter((o) => o.lane === lane)
@@ -1823,10 +1844,55 @@ export class AgberoGameEngine {
       for (let i = 1; i < laneObs.length; i++) {
         const ahead = laneObs[i - 1];
         const behind = laneObs[i];
-        const minAllowedY = ahead.y - (ahead.height / 2 + behind.height / 2 + 125);
+        const minAllowedY = ahead.y - (ahead.height / 2 + behind.height / 2 + 150);
         if (behind.y > minAllowedY || ahead.y - behind.y < minSameLaneGap) {
           behind.y = Math.min(behind.y, minAllowedY);
           behind.speedMultiplier = Math.min(behind.speedMultiplier, ahead.speedMultiplier);
+        }
+      }
+    }
+
+    // Escape-Path Guarantee Solver ("Always a Way Out"):
+    // If differential speeds ever cause all 3 lanes to become occupied within a 280px vertical corridor
+    // ahead of the player, automatically hold back the highest-up vehicle to carve a guaranteed 290px slalom gap!
+    for (const anchor of this.obstacles) {
+      if (anchor.y > this.player.y + 80 || anchor.y < -420) continue;
+
+      const laneBlockers: Array<Obstacle | null> = [null, null, null];
+      for (const other of this.obstacles) {
+        if (Math.abs(other.y - anchor.y) < 275) {
+          const existing = laneBlockers[other.lane];
+          if (!existing || Math.abs(other.y - anchor.y) < Math.abs(existing.y - anchor.y)) {
+            laneBlockers[other.lane] = other;
+          }
+        }
+      }
+
+      // Also count an active VIP Convoy warning/rush lane as blocked
+      const vipBlockedLane = this.vipConvoy.active ? this.vipConvoy.lane : -1;
+      const blockedLaneCount =
+        (laneBlockers[0] || vipBlockedLane === 0 ? 1 : 0) +
+        (laneBlockers[1] || vipBlockedLane === 1 ? 1 : 0) +
+        (laneBlockers[2] || vipBlockedLane === 2 ? 1 : 0);
+
+      if (blockedLaneCount >= 3) {
+        // Choose the obstacle furthest up the road (smallest y) that isn't in the VIP lane and push it back
+        const candidates = laneBlockers.filter(
+          (o): o is Obstacle => o !== null && o.lane !== vipBlockedLane
+        );
+        if (candidates.length > 0) {
+          candidates.sort((a, b) => a.y - b.y);
+          const toPushBack = candidates[0];
+          const remaining = candidates.filter((o) => o.id !== toPushBack.id);
+          const minRemainingY =
+            remaining.length > 0
+              ? Math.min(...remaining.map((o) => o.y))
+              : anchor.y;
+
+          toPushBack.y = Math.min(toPushBack.y, minRemainingY - 305);
+          toPushBack.speedMultiplier = Math.min(toPushBack.speedMultiplier, 0.58);
+          toPushBack.isSwitchingLane = false;
+          toPushBack.laneSwitchDirection = 0;
         }
       }
     }
@@ -1922,32 +1988,58 @@ export class AgberoGameEngine {
 
   private spawnWave(difficulty: number) {
     const allLanes: LaneIndex[] = [0, 1, 2];
+    const vipBlockedLane = this.vipConvoy.active ? this.vipConvoy.lane : -1;
     const reachableOpenLanes = allLanes.filter(
-      (lane) => Math.abs(lane - this.lastOpenLane) <= 1
+      (lane) => Math.abs(lane - this.lastOpenLane) <= 1 && lane !== vipBlockedLane
     );
+    const openPool =
+      reachableOpenLanes.length > 0
+        ? reachableOpenLanes
+        : allLanes.filter((lane) => lane !== vipBlockedLane);
     const designatedOpenLane =
-      reachableOpenLanes[Math.floor(Math.random() * reachableOpenLanes.length)];
+      openPool[Math.floor(Math.random() * openPool.length)] ?? this.lastOpenLane;
     this.lastOpenLane = designatedOpenLane;
 
-    const candidateObstacleLanes = allLanes.filter((lane) => lane !== designatedOpenLane);
+    const candidateObstacleLanes = allLanes.filter(
+      (lane) => lane !== designatedOpenLane && lane !== vipBlockedLane
+    );
     if (Math.random() < 0.5) {
       candidateObstacleLanes.reverse();
     }
 
-    const twoLaneProbability = 0.18 + difficulty * 0.58;
-    const desiredCount = Math.random() < twoLaneProbability ? 2 : 1;
+    const twoLaneProbability = 0.16 + difficulty * 0.54;
+    const desiredCount = Math.min(
+      candidateObstacleLanes.length,
+      Math.random() < twoLaneProbability ? 2 : 1
+    );
 
     for (let i = 0; i < desiredCount; i++) {
       const lane = candidateObstacleLanes[i];
       const sameLaneBlocked = this.obstacles.some(
-        (existing) => existing.lane === lane && existing.y < 140
+        (existing) => existing.lane === lane && existing.y < 190
       );
       if (sameLaneBlocked) continue;
 
       const type = this.pickObstacleType(difficulty, i);
       const spec = this.getObstacleSpec(type, difficulty);
-      const staggerOffset = i === 1 ? -(150 + Math.random() * 90) : 0;
+      // Stagger 2-vehicle waves vertically by 210-290px so the player can always weave diagonally between them!
+      const staggerOffset = i === 1 ? -(210 + Math.random() * 80) : 0;
       const spawnY = -spec.height / 2 - 60 + staggerOffset;
+
+      // Ensure spawning this vehicle does not create a 3-lane blockade with any existing vehicles near spawnY
+      const occupiedLanesNearSpawn = new Set<number>([lane]);
+      if (vipBlockedLane !== -1) {
+        occupiedLanesNearSpawn.add(vipBlockedLane);
+      }
+      for (const existing of this.obstacles) {
+        if (Math.abs(existing.y - spawnY) < 285) {
+          occupiedLanesNearSpawn.add(existing.lane);
+          occupiedLanesNearSpawn.add(existing.targetLane);
+        }
+      }
+      if (occupiedLanesNearSpawn.size >= 3) {
+        continue;
+      }
 
       const overlapsPowerUp = this.powerUps.some(
         (pu) => pu.lane === lane && Math.abs(pu.y - spawnY) < 180
@@ -1963,14 +2055,16 @@ export class AgberoGameEngine {
         type === 'DANFO' &&
         desiredCount === 1 &&
         difficulty > 0.22 &&
-        Math.random() < 0.34
+        Math.random() < 0.32
       ) {
         const possibleTargets = allLanes.filter(
-          (l) => Math.abs(l - lane) === 1
+          (l) => Math.abs(l - lane) === 1 && l !== vipBlockedLane
         ) as LaneIndex[];
-        targetLane = possibleTargets[Math.floor(Math.random() * possibleTargets.length)];
-        laneSwitchDirection = (targetLane - lane) as -1 | 1;
-        blinkerTimer = 0.95; // Flashes amber turn signal for ~1 second before swerving
+        if (possibleTargets.length > 0) {
+          targetLane = possibleTargets[Math.floor(Math.random() * possibleTargets.length)];
+          laneSwitchDirection = (targetLane - lane) as -1 | 1;
+          blinkerTimer = 1.05; // Flashes amber turn signal for >1 second before swerving
+        }
       }
 
       this.obstacles.push({
@@ -2198,48 +2292,96 @@ export class AgberoGameEngine {
   }
 
   // ============================================================================
-  // HIGH-DETAIL CEL-SHADED GRAPHIC NOVEL RENDERING PIPELINE (RESPONSIVE VIEWPORT)
+  // FULL 3D BEHIND-THE-BIKE PERSPECTIVE RENDERING ENGINE (WITH LAGOS SKYLINE)
   // ============================================================================
+
+  /**
+   * Projects a 2D logical highway coordinate (worldX, worldY) into 3D Behind-the-Bike Camera Space:
+   * - Fixed, steady vanishing point at ROAD_CENTER_X prevents background/skyline dizziness when switching lanes.
+   * - Horizon line sits at y = 218 (top 30% of screen is the 3D Lagos Island Skyline, Sunset & Bridge Towers).
+   * - Camera sits behind the player's Okada at y = 562 (scale = 1.0).
+   */
+  private project3D(worldX: number, worldY: number): {
+    x: number;
+    y: number;
+    scale: number;
+    depthT: number;
+  } {
+    const HORIZON_Y = 218;
+    const PLAYER_REF_Y = 562;
+    const MIN_WORLD_Y = -480;
+
+    // Normalized depth t: 0 at distant spawn horizon (-480), 1.0 at player bike (562), >1.0 near bottom camera
+    const rawT = (worldY - MIN_WORLD_Y) / (PLAYER_REF_Y - MIN_WORLD_Y);
+    const clampedT = Math.max(0.01, rawT);
+
+    // Smooth perspective foreshortening curve so distant traffic approaches naturally from the horizon
+    const perspT = Math.pow(clampedT, 1.38);
+    const scale = 0.22 + 0.78 * perspT;
+    const screenY = HORIZON_Y + (PLAYER_REF_Y - HORIZON_Y) * perspT;
+
+    // Fixed vanishing point at ROAD_CENTER_X keeps the 3D road and horizon rock-steady on the eyes
+    const screenX = ROAD_CENTER_X + (worldX - ROAD_CENTER_X) * scale;
+
+    return { x: screenX, y: screenY, scale, depthT: clampedT };
+  }
 
   public render(ctx: CanvasRenderingContext2D) {
     const canvasW = ctx.canvas.width || LOGICAL_WIDTH;
     const canvasH = ctx.canvas.height || LOGICAL_HEIGHT;
 
-    const MIN_VISIBLE_ROAD_CORRIDOR = ROAD_WIDTH + 140;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    const MIN_VISIBLE_ROAD_CORRIDOR = ROAD_WIDTH + 150;
     const coverScale = Math.max(canvasW / LOGICAL_WIDTH, canvasH / LOGICAL_HEIGHT);
     const maxSafeHorizontalScale = canvasW / MIN_VISIBLE_ROAD_CORRIDOR;
     const baseScale = Math.min(coverScale, maxSafeHorizontalScale);
     const scale = baseScale * this.cameraZoom;
 
     ctx.save();
-    ctx.fillStyle = '#0E0B16';
+    ctx.fillStyle = '#09070F';
     ctx.fillRect(0, 0, canvasW, canvasH);
 
-    // Apply Dynamic 3D Chase-Cam Lateral Parallax & Banking Tilt
-    const offsetX = (canvasW - LOGICAL_WIDTH * scale) / 2 + this.cameraParallaxX * scale;
-    const offsetY = (canvasH - LOGICAL_HEIGHT * scale) / 2;
-    ctx.translate(canvasW / 2, canvasH / 2);
-    ctx.rotate(this.cameraBankAngle);
-    ctx.translate(-canvasW / 2, -canvasH / 2);
+    // Steady 3D Chase-Cam Lateral Follow (No whole-screen rotation or sub-pixel jitter)
+    const offsetX = Math.round(
+      (canvasW - LOGICAL_WIDTH * scale) / 2 + this.cameraParallaxX * scale
+    );
+    const offsetY = Math.round((canvasH - LOGICAL_HEIGHT * scale) / 2);
     ctx.translate(offsetX, offsetY);
     ctx.scale(scale, scale);
 
     if (this.shakeTimeRemaining > 0) {
       const progress = this.shakeTimeRemaining / 0.42;
-      const mag = this.shakeIntensity * progress;
-      const shakeX = (Math.random() - 0.5) * 2 * mag;
-      const shakeY = (Math.random() - 0.5) * 2 * mag;
+      const mag = Math.min(5, this.shakeIntensity * 0.45) * progress;
+      const shakeX = Math.sin(this.elapsedTime * 45) * mag;
+      const shakeY = Math.cos(this.elapsedTime * 38) * mag;
       ctx.translate(shakeX, shakeY);
     }
 
-    this.drawEnvironment(ctx);
-    this.drawExpressway(ctx);
+    const visibleLeft = -offsetX / scale - 120;
+    const visibleTop = -offsetY / scale - 120;
+    const visibleW = canvasW / scale + 240;
+    const visibleH = canvasH / scale + 240;
+
+    // 1. 3D Horizon Skybox, Sunset/Moon, Lagos Island Skyscraper Skyline & Lagoon Water
+    this.draw3DSkyAndHorizon(ctx, visibleLeft, visibleTop, visibleW);
+
+    // 2. 3D Perspective Trapezoid Expressway, Concrete Barriers, Rumble Strips, Lane Dashes & Streetlight Poles
+    this.draw3DExpressway(ctx);
+
+    // 3. 3D Projected Skid Marks, Specular Headlight/Tail-Light Road Reflections & Road Hazards
     this.drawSkidMarks(ctx);
     this.drawAsphaltReflections(ctx);
     this.drawRoadHazards(ctx);
+
+    // 4. Depth-Sorted 3D Collectibles, Power-Ups, Exhaust Particles, Traffic Vehicles & Bosses (Back-to-Front Painter's Algorithm)
     this.drawCollectibles(ctx);
     this.drawPowerUps(ctx);
     this.drawExhaustParticles(ctx);
+
+    // Render Boss Danfo at horizon before closer traffic if active
+    this.drawBossDanfo(ctx);
 
     const sortedObstacles = [...this.obstacles].sort((a, b) => a.y - b.y);
     for (const obs of sortedObstacles) {
@@ -2247,7 +2389,8 @@ export class AgberoGameEngine {
     }
 
     this.drawVipConvoy(ctx);
-    this.drawBossDanfo(ctx);
+
+    // 5. 3D Rear-Chase Player Okada & Rider in Foreground
     this.drawBikeGhostTrail(ctx);
     this.drawPlayerBike(ctx);
     this.drawSlipstreamDraftMeter(ctx);
@@ -2255,13 +2398,14 @@ export class AgberoGameEngine {
     this.drawLandmarkGates(ctx);
     this.drawRainWeather(ctx);
 
-    const visibleLeft = -offsetX / scale;
-    const visibleTop = -offsetY / scale;
-    const visibleW = canvasW / scale;
-    const visibleH = canvasH / scale;
-
-    // AAA Post-Processing Shader Pass: Additive HDR Bloom, Sodium Streetlight Pools, Anamorphic Lens Flares & Horizon Glow
-    this.drawPostProcessingLightingPass(ctx, visibleLeft, visibleTop, visibleW, visibleH);
+    // 6. AAA Additive HDR Bloom, Volumetric Streetlight Cones & Lens Vignette
+    this.drawPostProcessingLightingPass(
+      ctx,
+      -offsetX / scale,
+      -offsetY / scale,
+      canvasW / scale,
+      canvasH / scale
+    );
 
     this.drawSpeechBubbles(ctx);
     this.drawFloatingCallouts(ctx);
@@ -2269,394 +2413,512 @@ export class AgberoGameEngine {
     if (this.boosterTimeRemaining > 0) {
       ctx.strokeStyle = 'rgba(0, 245, 212, 0.45)';
       ctx.lineWidth = 14;
-      ctx.strokeRect(visibleLeft, visibleTop, visibleW, visibleH);
+      ctx.strokeRect(-offsetX / scale, -offsetY / scale, canvasW / scale, canvasH / scale);
     }
 
     if (this.isGameOver) {
-      this.drawCrashImpactGraphic(ctx, this.impactX, this.impactY);
+      const pCrash = this.project3D(this.impactX, this.impactY);
+      this.drawCrashImpactGraphic(ctx, pCrash.x, pCrash.y);
     }
 
     if (this.crashFlashAlpha > 0) {
       ctx.fillStyle = `rgba(255, 204, 0, ${this.crashFlashAlpha * 0.45})`;
-      ctx.fillRect(visibleLeft - 50, visibleTop - 50, visibleW + 100, visibleH + 100);
+      ctx.fillRect(visibleLeft, visibleTop, visibleW, visibleH);
     }
 
     ctx.restore();
   }
 
-  private drawEnvironment(ctx: CanvasRenderingContext2D) {
-    const EXT_TOP = -600;
-    const EXT_BOTTOM = LOGICAL_HEIGHT + 600;
-    const EXT_HEIGHT = EXT_BOTTOM - EXT_TOP;
-
-    // Stage-dependent lighting palette (Stage 1: Golden Hour, Stage 2: Neon Dusk, Stage 3: Monsoon Storm)
+  /**
+   * 1. Renders the 3D Horizon Skybox, Volumetric Sun/Neon Moon, Victoria Island Skyscraper Skyline,
+   * Lekki-Ikoyi Cable-Stay Bridge Pylons, and 3rd Mainland Lagoon Water below the horizon.
+   */
+  private draw3DSkyAndHorizon(
+    ctx: CanvasRenderingContext2D,
+    left: number,
+    top: number,
+    width: number
+  ) {
+    const HORIZON_Y = 218;
     const stageMod = (this.stageIndex - 1) % 3;
-    const vergeOuter = stageMod === 0 ? '#0E0B16' : stageMod === 1 ? '#090D1A' : '#08121E';
-    const vergeMid = stageMod === 0 ? '#261822' : stageMod === 1 ? '#1A1433' : '#112233';
-    const vergeInner = stageMod === 0 ? '#402620' : stageMod === 1 ? '#2E1C44' : '#1A3040';
+    const vanishX = ROAD_CENTER_X;
 
-    const leftGrad = ctx.createLinearGradient(0, 0, ROAD_LEFT, 0);
-    leftGrad.addColorStop(0, vergeOuter);
-    leftGrad.addColorStop(0.65, vergeMid);
-    leftGrad.addColorStop(1, vergeInner);
-    ctx.fillStyle = leftGrad;
-    ctx.fillRect(-400, EXT_TOP, ROAD_LEFT + 400, EXT_HEIGHT);
+    // Sky Gradient above Horizon
+    const skyGrad = ctx.createLinearGradient(0, Math.min(0, top), 0, HORIZON_Y);
+    if (stageMod === 0) {
+      // Stage 1: Lagos Golden Hour Sunset
+      skyGrad.addColorStop(0, '#0F081D');
+      skyGrad.addColorStop(0.45, '#3B123C');
+      skyGrad.addColorStop(0.78, '#9A2B2B');
+      skyGrad.addColorStop(1, '#FF9E1B');
+    } else if (stageMod === 1) {
+      // Stage 2: Eko Bridge Neon Cyberpunk Dusk
+      skyGrad.addColorStop(0, '#050511');
+      skyGrad.addColorStop(0.5, '#130D33');
+      skyGrad.addColorStop(0.85, '#3B0F54');
+      skyGrad.addColorStop(1, '#00F5D4');
+    } else {
+      // Stage 3: Lekki-Ikoyi Monsoon Storm Sky
+      skyGrad.addColorStop(0, '#040914');
+      skyGrad.addColorStop(0.55, '#0F1E36');
+      skyGrad.addColorStop(0.88, '#1E3A5F');
+      skyGrad.addColorStop(1, '#38BDF8');
+    }
+    ctx.fillStyle = skyGrad;
+    ctx.fillRect(left, top, width, HORIZON_Y - top + 4);
 
-    const rightGrad = ctx.createLinearGradient(ROAD_RIGHT, 0, LOGICAL_WIDTH, 0);
-    rightGrad.addColorStop(0, vergeInner);
-    rightGrad.addColorStop(0.35, vergeMid);
-    rightGrad.addColorStop(1, vergeOuter);
-    ctx.fillStyle = rightGrad;
-    ctx.fillRect(ROAD_RIGHT, EXT_TOP, LOGICAL_WIDTH - ROAD_RIGHT + 400, EXT_HEIGHT);
+    // Giant Glowing Sunset / Synthwave Sun Disc at the Vanishing Point
+    const sunY = HORIZON_Y - 38;
+    const sunRadius = 86;
+    const sunGrad = ctx.createRadialGradient(vanishX, sunY, 8, vanishX, sunY, sunRadius * 1.6);
+    if (stageMod === 0) {
+      sunGrad.addColorStop(0, '#FFFDF0');
+      sunGrad.addColorStop(0.45, '#FFCC00');
+      sunGrad.addColorStop(0.75, 'rgba(255, 69, 0, 0.45)');
+      sunGrad.addColorStop(1, 'rgba(255, 69, 0, 0)');
+    } else {
+      sunGrad.addColorStop(0, '#E0F2FE');
+      sunGrad.addColorStop(0.45, '#00F5D4');
+      sunGrad.addColorStop(0.75, 'rgba(168, 85, 247, 0.45)');
+      sunGrad.addColorStop(1, 'rgba(168, 85, 247, 0)');
+    }
+    ctx.fillStyle = sunGrad;
+    ctx.beginPath();
+    ctx.arc(vanishX, sunY, sunRadius * 1.6, 0, Math.PI * 2);
+    ctx.fill();
 
-    const poleSpacing = 240;
-    const offset = this.asphaltGrainOffset;
-
-    for (let y = EXT_TOP - poleSpacing + offset; y < EXT_BOTTOM + poleSpacing; y += poleSpacing) {
-      ctx.fillStyle =
-        stageMod === 1 ? 'rgba(168, 85, 247, 0.09)' : 'rgba(255, 170, 0, 0.08)';
+    // Iconic Lekki-Ikoyi A-Frame Cable-Stay Suspension Bridge Tower rising on the Horizon
+    const towerX = vanishX;
+    const towerTopY = HORIZON_Y - 145;
+    ctx.strokeStyle = '#120E1E';
+    ctx.lineWidth = 3;
+    for (let c = 1; c <= 7; c++) {
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(ROAD_LEFT, y + 60);
-      ctx.lineTo(ROAD_LEFT, y + 120);
-      ctx.lineTo(0, y + 60);
-      ctx.closePath();
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(LOGICAL_WIDTH, y + 40);
-      ctx.lineTo(ROAD_RIGHT, y + 100);
-      ctx.lineTo(ROAD_RIGHT, y + 160);
-      ctx.lineTo(LOGICAL_WIDTH, y + 100);
-      ctx.closePath();
-      ctx.fill();
-
-      // Streetlight Cantilever Arms
-      ctx.fillStyle = '#2B2836';
-      ctx.strokeStyle = '#0D0C10';
-      ctx.lineWidth = 3.5;
-      ctx.fillRect(ROAD_LEFT - 85, y + 20, 55, 10);
-      ctx.strokeRect(ROAD_LEFT - 85, y + 20, 55, 10);
-      ctx.fillStyle = stageMod === 1 ? '#00F5D4' : '#FFCC00';
-      ctx.fillRect(ROAD_LEFT - 42, y + 22, 10, 6);
-
-      ctx.fillStyle = '#2B2836';
-      ctx.fillRect(ROAD_RIGHT + 30, y + 60, 55, 10);
-      ctx.strokeRect(ROAD_RIGHT + 30, y + 60, 55, 10);
-      ctx.fillStyle = stageMod === 1 ? '#00F5D4' : '#FFCC00';
-      ctx.fillRect(ROAD_RIGHT + 32, y + 62, 10, 6);
+      ctx.moveTo(towerX, towerTopY + 18);
+      ctx.lineTo(towerX - 45 - c * 36, HORIZON_Y);
+      ctx.moveTo(towerX, towerTopY + 18);
+      ctx.lineTo(towerX + 45 + c * 36, HORIZON_Y);
+      ctx.stroke();
     }
 
-    // Rich Lagos Lagoon Waves, Wooden Fishing Canoes, Bus-Stop Shelters & Cable-Stay Bridge Cables
-    const sceneryPeriod = 720;
-    const scOffset = this.sceneryScrollOffset;
-    for (
-      let sy = EXT_TOP - sceneryPeriod + scOffset;
-      sy < EXT_BOTTOM + sceneryPeriod;
-      sy += sceneryPeriod
-    ) {
-      // 1. Shimmering Lagos Lagoon Water Ripples & Wooden Fishing Canoe (Left Shoulder)
-      ctx.strokeStyle =
-        stageMod === 1 ? 'rgba(0, 245, 212, 0.22)' : 'rgba(255, 204, 0, 0.22)';
-      ctx.lineWidth = 3;
-      for (let wy = 0; wy < 140; wy += 35) {
-        ctx.beginPath();
-        ctx.moveTo(45, sy + wy);
-        ctx.quadraticCurveTo(95, sy + wy - 10, 145, sy + wy);
-        ctx.stroke();
-      }
+    // Center A-Frame Concrete Pylon Silhouette
+    ctx.fillStyle = '#0D0B14';
+    ctx.beginPath();
+    ctx.moveTo(towerX - 6, towerTopY);
+    ctx.lineTo(towerX + 6, towerTopY);
+    ctx.lineTo(towerX + 34, HORIZON_Y);
+    ctx.lineTo(towerX + 20, HORIZON_Y);
+    ctx.lineTo(towerX, towerTopY + 42);
+    ctx.lineTo(towerX - 20, HORIZON_Y);
+    ctx.lineTo(towerX - 34, HORIZON_Y);
+    ctx.closePath();
+    ctx.fill();
 
-      // Wooden Makoko / Lagoon Fishing Canoe
-      const canoeX = 135;
-      const canoeY = sy + 180;
-      ctx.fillStyle = '#4A2C18';
-      ctx.strokeStyle = '#0D0C10';
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(canoeX, canoeY - 52);
-      ctx.quadraticCurveTo(canoeX + 22, canoeY, canoeX, canoeY + 52);
-      ctx.quadraticCurveTo(canoeX - 22, canoeY, canoeX, canoeY - 52);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+    // Distant Lagos Island / Victoria Island Skyscraper Skyline Silhouettes
+    const buildings = [
+      { dx: -480, w: 46, h: 68 },
+      { dx: -425, w: 38, h: 92 },
+      { dx: -378, w: 54, h: 55 },
+      { dx: -315, w: 42, h: 110 },
+      { dx: -265, w: 48, h: 74 },
+      { dx: -210, w: 34, h: 48 },
+      { dx: 185, w: 40, h: 58 },
+      { dx: 232, w: 50, h: 105 },
+      { dx: 290, w: 36, h: 76 },
+      { dx: 335, w: 58, h: 88 },
+      { dx: 402, w: 44, h: 64 },
+      { dx: 455, w: 52, h: 96 },
+    ];
 
-      // Canoe wooden benches & lantern glow
-      ctx.fillStyle = '#7C4D2B';
-      ctx.fillRect(canoeX - 9, canoeY - 16, 18, 6);
-      ctx.fillRect(canoeX - 9, canoeY + 10, 18, 6);
-      ctx.fillStyle = '#FFCC00';
-      ctx.beginPath();
-      ctx.arc(canoeX, canoeY - 32, 4.5, 0, Math.PI * 2);
-      ctx.fill();
+    const skyParallax = vanishX * 0.4 + ROAD_CENTER_X * 0.6;
+    for (const b of buildings) {
+      const bx = skyParallax + b.dx;
+      const by = HORIZON_Y - b.h;
+      ctx.fillStyle = '#0D0B14';
+      ctx.fillRect(bx, by, b.w, b.h);
 
-      // 2. Lagos Yellow-and-Black Bus Stop Shelter & "OWA O!" Comic Callout (Right Shoulder)
-      const shelterX = ROAD_RIGHT + 42;
-      const shelterY = sy + 320;
-      ctx.fillStyle = '#FFCC00';
-      ctx.strokeStyle = '#0D0C10';
-      ctx.lineWidth = 4.5;
-      this.fillRoundedRect(ctx, shelterX, shelterY, 64, 110, 8);
-      this.strokeRoundedRect(ctx, shelterX, shelterY, 64, 110, 8);
-
-      // Black hazard stripes on bus stop roof
-      ctx.fillStyle = '#0D0C10';
-      ctx.fillRect(shelterX + 6, shelterY + 10, 52, 12);
-      ctx.fillRect(shelterX + 6, shelterY + 88, 52, 12);
-      ctx.fillStyle = '#FFFDF7';
-      ctx.font = '900 9px "Inter", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('BUS STOP', shelterX + 32, shelterY + 55);
-
-      // Lekki-Ikoyi Style Diagonal Suspension Bridge Stay-Cables (Stage 2 & 3)
-      if (this.stageIndex >= 2) {
-        ctx.strokeStyle = 'rgba(226, 232, 240, 0.16)';
-        ctx.lineWidth = 3;
-        for (let c = 0; c < 4; c++) {
-          ctx.beginPath();
-          ctx.moveTo(ROAD_LEFT - 30, sy + c * 65);
-          ctx.lineTo(0, sy - 180 + c * 40);
-          ctx.moveTo(ROAD_RIGHT + 30, sy + c * 65);
-          ctx.lineTo(LOGICAL_WIDTH, sy - 180 + c * 40);
-          ctx.stroke();
+      // Glowing skyscraper office windows
+      ctx.fillStyle = stageMod === 1 ? 'rgba(0, 245, 212, 0.45)' : 'rgba(255, 204, 0, 0.42)';
+      for (let wy = by + 8; wy < HORIZON_Y - 8; wy += 12) {
+        for (let wx = bx + 6; wx < bx + b.w - 8; wx += 10) {
+          if ((wx + wy) % 3 !== 0) {
+            ctx.fillRect(wx, wy, 4, 5);
+          }
         }
       }
     }
 
-    const isBoosting = this.boosterTimeRemaining > 0;
-    for (const line of this.speedLines) {
-      ctx.strokeStyle = isBoosting
-        ? `rgba(0, 245, 212, ${Math.min(1, line.alpha * 1.6)})`
-        : `rgba(255, 204, 0, ${line.alpha})`;
-      ctx.lineWidth = isBoosting ? 4 : 3;
+    // Lagos Lagoon Water Stretching from Horizon Downward on Both Sides of the Bridge
+    const waterGrad = ctx.createLinearGradient(0, HORIZON_Y, 0, LOGICAL_HEIGHT + 400);
+    if (stageMod === 0) {
+      waterGrad.addColorStop(0, '#3D1D2E');
+      waterGrad.addColorStop(0.25, '#1F1429');
+      waterGrad.addColorStop(1, '#09070F');
+    } else if (stageMod === 1) {
+      waterGrad.addColorStop(0, '#19123B');
+      waterGrad.addColorStop(0.3, '#0B0B24');
+      waterGrad.addColorStop(1, '#05050D');
+    } else {
+      waterGrad.addColorStop(0, '#132842');
+      waterGrad.addColorStop(0.3, '#0A1628');
+      waterGrad.addColorStop(1, '#040811');
+    }
+    ctx.fillStyle = waterGrad;
+    ctx.fillRect(left, HORIZON_Y, width, LOGICAL_HEIGHT - HORIZON_Y + 500);
+
+    // Calm, Steady Lagoon Water Reflections (Slow drift so peripheral vision stays relaxed)
+    ctx.strokeStyle =
+      stageMod === 1 ? 'rgba(0, 245, 212, 0.11)' : 'rgba(255, 180, 40, 0.12)';
+    const waterDrift = (this.sceneryScrollOffset * 0.18) % 180;
+    for (let wy = -380 + waterDrift; wy < 820; wy += 180) {
+      const pLeft = this.project3D(ROAD_LEFT - 180, wy);
+      const pRight = this.project3D(ROAD_RIGHT + 180, wy);
+      ctx.lineWidth = Math.max(1, 2.5 * pLeft.scale);
       ctx.beginPath();
-      ctx.moveTo(line.x, line.y);
-      ctx.lineTo(line.x, line.y + line.length * (isBoosting ? 1.5 : 1));
+      ctx.moveTo(pLeft.x - 110 * pLeft.scale, pLeft.y);
+      ctx.lineTo(pLeft.x - 25 * pLeft.scale, pLeft.y);
+      ctx.moveTo(pRight.x + 25 * pRight.scale, pRight.y);
+      ctx.lineTo(pRight.x + 110 * pRight.scale, pRight.y);
       ctx.stroke();
     }
   }
 
-  private drawExpressway(ctx: CanvasRenderingContext2D) {
-    const EXT_TOP = -600;
-    const EXT_BOTTOM = LOGICAL_HEIGHT + 600;
-    const EXT_HEIGHT = EXT_BOTTOM - EXT_TOP;
+  /**
+   * 2. Renders the 3D Perspective Trapezoid Highway, Concrete Barriers, Rumble Strips,
+   * Lane Dividers, Bridge Expansion Joints & 3D Streetlight Poles receding to the Vanishing Point.
+   */
+  private draw3DExpressway(ctx: CanvasRenderingContext2D) {
+    const FAR_Y = -480;
+    const NEAR_Y = 920;
 
-    const asphaltGrad = ctx.createLinearGradient(ROAD_LEFT, 0, ROAD_RIGHT, 0);
-    asphaltGrad.addColorStop(0, '#1B1921');
-    asphaltGrad.addColorStop(0.18, '#272430');
-    asphaltGrad.addColorStop(0.5, '#342E3A');
-    asphaltGrad.addColorStop(0.82, '#272430');
-    asphaltGrad.addColorStop(1, '#1B1921');
+    const pFarLeft = this.project3D(ROAD_LEFT, FAR_Y);
+    const pFarRight = this.project3D(ROAD_RIGHT, FAR_Y);
+    const pNearLeft = this.project3D(ROAD_LEFT, NEAR_Y);
+    const pNearRight = this.project3D(ROAD_RIGHT, NEAR_Y);
 
-    ctx.fillStyle = asphaltGrad;
-    ctx.fillRect(ROAD_LEFT, EXT_TOP, ROAD_WIDTH, EXT_HEIGHT);
-
-    // Tile High-Frequency Procedural Micro-Aggregate Asphalt Texture
-    if (this.asphaltPattern) {
-      ctx.save();
-      ctx.translate(ROAD_LEFT, this.asphaltGrainOffset);
-      ctx.fillStyle = this.asphaltPattern;
-      ctx.fillRect(0, EXT_TOP - 240, ROAD_WIDTH, EXT_HEIGHT + 480);
-      ctx.restore();
-    }
-
-    for (let lane = 0; lane < 3; lane++) {
-      const cx = LANE_CENTERS[lane];
-      ctx.fillStyle = 'rgba(13, 12, 16, 0.22)';
-      ctx.fillRect(cx - 34, EXT_TOP, 18, EXT_HEIGHT);
-      ctx.fillRect(cx + 16, EXT_TOP, 18, EXT_HEIGHT);
-
-      const laneGlow = ctx.createLinearGradient(cx - 36, 0, cx + 36, 0);
-      laneGlow.addColorStop(0, 'rgba(255, 185, 40, 0)');
-      laneGlow.addColorStop(0.5, 'rgba(255, 185, 40, 0.065)');
-      laneGlow.addColorStop(1, 'rgba(255, 185, 40, 0)');
-      ctx.fillStyle = laneGlow;
-      ctx.fillRect(cx - 36, EXT_TOP, 72, EXT_HEIGHT);
-    }
-
-    const seamSpacing = 240;
-    for (
-      let y = EXT_TOP - seamSpacing + this.asphaltGrainOffset;
-      y < EXT_BOTTOM + seamSpacing;
-      y += seamSpacing
-    ) {
-      ctx.strokeStyle = '#141218';
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(ROAD_LEFT + 16, y);
-      ctx.lineTo(ROAD_RIGHT - 16, y);
-      ctx.stroke();
-
-      ctx.strokeStyle = 'rgba(255, 204, 0, 0.12)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(ROAD_LEFT + 16, y + 3);
-      ctx.lineTo(ROAD_RIGHT - 16, y + 3);
-      ctx.stroke();
-
-      ctx.fillStyle = 'rgba(13, 12, 16, 0.35)';
-      ctx.fillRect(LANE_CENTERS[0] - 22, y + 70, 6, 28);
-      ctx.fillRect(LANE_CENTERS[1] + 28, y + 140, 5, 34);
-      ctx.fillRect(LANE_CENTERS[2] - 15, y + 190, 6, 22);
-    }
-
-    const stripW = 14;
-    const segH = 48;
-    for (let y = EXT_TOP - segH * 2 + this.barrierScrollOffset; y < EXT_BOTTOM + segH; y += segH) {
-      const isYellow = Math.floor((y - this.barrierScrollOffset) / segH) % 2 === 0;
-      ctx.fillStyle = isYellow ? '#FFCC00' : '#0D0C10';
-      ctx.fillRect(ROAD_LEFT, y, stripW, segH);
-      ctx.fillRect(ROAD_RIGHT - stripW, y, stripW, segH);
-    }
-
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 4;
+    // 1. Bridge Concrete Under-Deck Apron
+    ctx.fillStyle = '#14121B';
     ctx.beginPath();
-    ctx.moveTo(ROAD_LEFT + stripW, EXT_TOP);
-    ctx.lineTo(ROAD_LEFT + stripW, EXT_BOTTOM);
-    ctx.moveTo(ROAD_RIGHT - stripW, EXT_TOP);
-    ctx.lineTo(ROAD_RIGHT - stripW, EXT_BOTTOM);
-    ctx.stroke();
+    ctx.moveTo(pFarLeft.x - 42 * pFarLeft.scale, pFarLeft.y);
+    ctx.lineTo(pFarRight.x + 42 * pFarRight.scale, pFarRight.y);
+    ctx.lineTo(pNearRight.x + 42 * pNearRight.scale, pNearRight.y);
+    ctx.lineTo(pNearLeft.x - 42 * pNearLeft.scale, pNearLeft.y);
+    ctx.closePath();
+    ctx.fill();
 
-    const barrierW = 34;
-    const barrierSeg = 96;
-    for (
-      let y = EXT_TOP - barrierSeg + this.barrierScrollOffset;
-      y < EXT_BOTTOM + barrierSeg;
-      y += barrierSeg
-    ) {
-      this.drawCelConcreteBlock(ctx, ROAD_LEFT - barrierW, y, barrierW, barrierSeg - 4, true);
-      this.drawCelConcreteBlock(ctx, ROAD_RIGHT, y, barrierW, barrierSeg - 4, false);
+    // 2. Main 3D Perspective Asphalt Trapezoid
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(pFarLeft.x, pFarLeft.y);
+    ctx.lineTo(pFarRight.x, pFarRight.y);
+    ctx.lineTo(pNearRight.x, pNearRight.y);
+    ctx.lineTo(pNearLeft.x, pNearLeft.y);
+    ctx.closePath();
+
+    const asphaltGrad = ctx.createLinearGradient(0, pFarLeft.y, 0, pNearLeft.y);
+    asphaltGrad.addColorStop(0, '#16131F');
+    asphaltGrad.addColorStop(0.35, '#252130');
+    asphaltGrad.addColorStop(1, '#1E1B26');
+    ctx.fillStyle = asphaltGrad;
+    ctx.fill();
+
+    // Clip lane tire ruts & bridge expansion joints inside the 3D road trapezoid
+    ctx.clip();
+
+    // 3D Perspective Lane Center Specular Sun-Sheen & Tire-Wear Ruts
+    for (let lane = 0; lane < 3; lane++) {
+      const laneX = LANE_CENTERS[lane];
+      const pLaneFar = this.project3D(laneX, FAR_Y);
+      const pLaneNear = this.project3D(laneX, NEAR_Y);
+
+      ctx.strokeStyle = 'rgba(255, 190, 60, 0.05)';
+      ctx.lineWidth = 38;
+      ctx.beginPath();
+      ctx.moveTo(pLaneFar.x, pLaneFar.y);
+      ctx.lineTo(pLaneNear.x, pLaneNear.y);
+      ctx.stroke();
     }
 
+    // Horizontal 3rd Mainland Bridge Expansion Joints scrolling smoothly in 3D perspective
+    const seamPeriod = 220;
+    const seamOffset = this.asphaltGrainOffset % seamPeriod;
+    for (let wy = FAR_Y + seamOffset; wy < NEAR_Y; wy += seamPeriod) {
+      const pL = this.project3D(ROAD_LEFT, wy);
+      const pR = this.project3D(ROAD_RIGHT, wy);
+      ctx.strokeStyle = 'rgba(12, 10, 16, 0.52)';
+      ctx.lineWidth = Math.max(1, 3.2 * pL.scale);
+      ctx.beginPath();
+      ctx.moveTo(pL.x, pL.y);
+      ctx.lineTo(pR.x, pR.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // 3. 3D Perspective Yellow & Black Hazard Rumble Strips + Concrete Jersey Barriers
+    const segWorldLen = 110;
+    const segOffset = this.barrierScrollOffset % segWorldLen;
+    const barrierW = 36;
+    const stripW = 14;
+
+    for (let wy = FAR_Y + segOffset; wy < NEAR_Y; wy += segWorldLen) {
+      const wyNext = wy + segWorldLen;
+      const isYellow = Math.floor((wy - this.barrierScrollOffset) / segWorldLen) % 2 === 0;
+
+      // Left & Right Rumble Strip Quads
+      this.draw3DQuad(
+        ctx,
+        ROAD_LEFT,
+        wy,
+        ROAD_LEFT + stripW,
+        wyNext,
+        isYellow ? '#FFCC00' : '#0D0C10',
+        '#0D0C10'
+      );
+      this.draw3DQuad(
+        ctx,
+        ROAD_RIGHT - stripW,
+        wy,
+        ROAD_RIGHT,
+        wyNext,
+        isYellow ? '#FFCC00' : '#0D0C10',
+        '#0D0C10'
+      );
+
+      // Left & Right Raised 3D Concrete Side Barriers
+      this.draw3DBarrierSegment(ctx, ROAD_LEFT - barrierW, ROAD_LEFT, wy, wyNext - 3, true);
+      this.draw3DBarrierSegment(ctx, ROAD_RIGHT, ROAD_RIGHT + barrierW, wy, wyNext - 3, false);
+    }
+
+    // 4. 3D Perspective White Dashed Lane Dividers & Cat's-Eye Reflectors
     const dividerX1 = ROAD_LEFT + LANE_WIDTH;
     const dividerX2 = ROAD_LEFT + LANE_WIDTH * 2;
-    const dashPeriod = 120;
-    const dashLen = 62;
-    const dashW = 10;
+    const dashPeriod = 150;
+    const dashLen = 78;
+    const dashOffset = this.roadScrollOffset % dashPeriod;
 
-    for (
-      let y = EXT_TOP - dashPeriod + this.roadScrollOffset;
-      y < EXT_BOTTOM + dashPeriod;
-      y += dashPeriod
-    ) {
+    for (let wy = FAR_Y + dashOffset; wy < NEAR_Y; wy += dashPeriod) {
       for (const divX of [dividerX1, dividerX2]) {
-        ctx.fillStyle = '#0D0C10';
-        ctx.fillRect(divX - dashW / 2 + 3, y + 4, dashW, dashLen);
+        this.draw3DQuad(
+          ctx,
+          divX - 5,
+          wy,
+          divX + 5,
+          wy + dashLen,
+          '#FFFDF7',
+          '#0D0C10'
+        );
 
-        ctx.fillStyle = '#FFFDF7';
-        ctx.strokeStyle = '#0D0C10';
-        ctx.lineWidth = 3.5;
-        ctx.fillRect(divX - dashW / 2, y, dashW, dashLen);
-        ctx.strokeRect(divX - dashW / 2, y, dashW, dashLen);
-
-        const studY = y + dashLen + (dashPeriod - dashLen) / 2;
+        // Amber Cat's-Eye Reflector Stud between dashes
+        const studP = this.project3D(divX, wy + dashLen + 26);
+        const studW = Math.max(2, 9 * studP.scale);
+        const studH = Math.max(1.5, 6 * studP.scale);
         ctx.fillStyle = '#FF9500';
-        ctx.strokeStyle = '#0D0C10';
-        ctx.lineWidth = 2.5;
-        ctx.fillRect(divX - 5, studY - 4, 10, 8);
-        ctx.strokeRect(divX - 5, studY - 4, 10, 8);
+        ctx.fillRect(studP.x - studW / 2, studP.y - studH / 2, studW, studH);
+      }
+    }
+
+    // 5. 3D Vertical Highway Streetlight Poles & Cantilever Lamps Rising from the Barriers
+    const polePeriod = 240;
+    const poleOffset = this.asphaltGrainOffset % polePeriod;
+    const stageMod = (this.stageIndex - 1) % 3;
+    const lampBulbColor = stageMod === 1 ? '#00F5D4' : '#FFCC00';
+
+    for (let wy = FAR_Y + poleOffset; wy < NEAR_Y - 60; wy += polePeriod) {
+      for (const isLeft of [true, false]) {
+        const baseX = isLeft ? ROAD_LEFT - 32 : ROAD_RIGHT + 32;
+        const pBase = this.project3D(baseX, wy);
+        const poleH = 175 * pBase.scale;
+        const armReach = (isLeft ? 1 : -1) * 72 * pBase.scale;
+
+        ctx.strokeStyle = '#2B2838';
+        ctx.lineWidth = Math.max(1.5, 6 * pBase.scale);
+        ctx.beginPath();
+        ctx.moveTo(pBase.x, pBase.y);
+        ctx.lineTo(pBase.x, pBase.y - poleH);
+        ctx.lineTo(pBase.x + armReach, pBase.y - poleH - 8 * pBase.scale);
+        ctx.stroke();
+
+        // Glowing 3D Streetlight Fixture Head
+        const lampX = pBase.x + armReach;
+        const lampY = pBase.y - poleH - 8 * pBase.scale;
+        ctx.fillStyle = lampBulbColor;
+        ctx.beginPath();
+        ctx.arc(lampX, lampY, Math.max(2, 7 * pBase.scale), 0, Math.PI * 2);
+        ctx.fill();
       }
     }
   }
 
-  private drawCelConcreteBlock(
+  private draw3DQuad(
     ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    isLeft: boolean
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    fill: string,
+    stroke?: string
   ) {
-    ctx.fillStyle = '#7E7B88';
-    ctx.fillRect(x, y, w, h);
+    const pTL = this.project3D(x1, y1);
+    const pTR = this.project3D(x2, y1);
+    const pBR = this.project3D(x2, y2);
+    const pBL = this.project3D(x1, y2);
 
-    ctx.fillStyle = '#B8B2C2';
-    ctx.fillRect(x + 4, y + 4, w - 12, h - 8);
-
-    ctx.fillStyle = '#474450';
-    ctx.fillRect(x + w - 8, y, 8, h);
-
-    ctx.fillStyle = '#2B2933';
+    ctx.fillStyle = fill;
     ctx.beginPath();
-    ctx.arc(x + w / 2, y + 16, 3, 0, Math.PI * 2);
-    ctx.arc(x + w / 2, y + h - 16, 3, 0, Math.PI * 2);
+    ctx.moveTo(pTL.x, pTL.y);
+    ctx.lineTo(pTR.x, pTR.y);
+    ctx.lineTo(pBR.x, pBR.y);
+    ctx.lineTo(pBL.x, pBL.y);
+    ctx.closePath();
     ctx.fill();
 
-    ctx.fillStyle = '#FF5500';
-    const refX = isLeft ? x + w - 4 : x;
-    ctx.fillRect(refX, y + h / 2 - 6, 4, 12);
+    if (stroke && pBL.scale > 0.32) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = Math.max(1, 2.5 * pBL.scale);
+      ctx.stroke();
+    }
+  }
 
+  private draw3DBarrierSegment(
+    ctx: CanvasRenderingContext2D,
+    x1: number,
+    x2: number,
+    y1: number,
+    y2: number,
+    isLeft: boolean
+  ) {
+    const pTL = this.project3D(x1, y1);
+    const pTR = this.project3D(x2, y1);
+    const pBR = this.project3D(x2, y2);
+    const pBL = this.project3D(x1, y2);
+
+    const hFar = 24 * pTL.scale;
+    const hNear = 24 * pBL.scale;
+
+    // Inner traffic-facing vertical concrete wall
+    ctx.fillStyle = isLeft ? '#575366' : '#575366';
+    ctx.beginPath();
+    if (isLeft) {
+      ctx.moveTo(pTR.x, pTR.y);
+      ctx.lineTo(pBR.x, pBR.y);
+      ctx.lineTo(pBR.x, pBR.y - hNear);
+      ctx.lineTo(pTR.x, pTR.y - hFar);
+    } else {
+      ctx.moveTo(pTL.x, pTL.y);
+      ctx.lineTo(pBL.x, pBL.y);
+      ctx.lineTo(pBL.x, pBL.y - hNear);
+      ctx.lineTo(pTL.x, pTL.y - hFar);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Raised Top Cap of Concrete Barrier
+    ctx.fillStyle = '#9E98AD';
     ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 4.5;
-    ctx.strokeRect(x, y, w, h);
+    ctx.lineWidth = Math.max(1, 3 * pBL.scale);
+    ctx.beginPath();
+    ctx.moveTo(pTL.x, pTL.y - hFar);
+    ctx.lineTo(pTR.x, pTR.y - hFar);
+    ctx.lineTo(pBR.x, pBR.y - hNear);
+    ctx.lineTo(pBL.x, pBL.y - hNear);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Glowing Amber Barrier Reflector
+    const refX = isLeft ? (pTR.x + pBR.x) / 2 : (pTL.x + pBL.x) / 2;
+    const refY = (pTR.y + pBR.y) / 2 - (hFar + hNear) * 0.25;
+    ctx.fillStyle = '#FF5500';
+    ctx.fillRect(
+      refX - 2 * pBL.scale,
+      refY - 3 * pBL.scale,
+      Math.max(1.5, 4 * pBL.scale),
+      Math.max(2, 6 * pBL.scale)
+    );
   }
 
   /**
-   * Tire Skid Marks left on asphalt during sharp high-speed lane swerves
+   * Tire Skid Marks left on asphalt during sharp high-speed lane swerves (3D Projected)
    */
   private drawSkidMarks(ctx: CanvasRenderingContext2D) {
     if (this.skidMarks.length === 0) return;
     ctx.save();
     ctx.lineCap = 'round';
     for (const sk of this.skidMarks) {
+      const p1 = this.project3D(sk.x1, sk.y1);
+      const p2 = this.project3D(sk.x2, sk.y2);
       ctx.strokeStyle = `rgba(13, 12, 16, ${Math.max(0, sk.alpha)})`;
-      ctx.lineWidth = 9;
+      ctx.lineWidth = Math.max(2, 9 * p2.scale);
       ctx.beginPath();
-      ctx.moveTo(sk.x1, sk.y1);
-      ctx.lineTo(sk.x2, sk.y2);
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
       ctx.stroke();
     }
     ctx.restore();
   }
 
   /**
-   * Specular Wet-Asphalt Reflections of Vehicle Tail-Lights, Headlights & Naira Pickups
+   * Specular Wet-Asphalt Reflections of Vehicle Tail-Lights & Headlights (3D Projected)
    */
   private drawAsphaltReflections(ctx: CanvasRenderingContext2D) {
     ctx.save();
-    // Reflections are extra glossy during Stage 2 Neon Dusk & Stage 3 Monsoon Rain
     const wetness = this.stageIndex >= 3 ? 0.34 : this.stageIndex === 2 ? 0.24 : 0.16;
 
     for (const obs of this.obstacles) {
       if (obs.type === 'BARRICADE') continue;
-      const hw = obs.width / 2;
-      const hh = obs.height / 2;
+      const pObs = this.project3D(obs.x, obs.y);
+      const s = pObs.scale;
+      const hw = (obs.width * s) / 2;
+      const hh = (obs.height * s * 0.72) / 2;
 
       // Forward Golden Headlight Cone on Asphalt ahead of Danfo & Keke
-      const headGrad = ctx.createLinearGradient(obs.x, obs.y - hh, obs.x, obs.y - hh - 130);
+      const headLen = 110 * s;
+      const headGrad = ctx.createLinearGradient(
+        pObs.x,
+        pObs.y - hh,
+        pObs.x,
+        pObs.y - hh - headLen
+      );
       headGrad.addColorStop(0, `rgba(255, 224, 102, ${wetness * 1.3})`);
       headGrad.addColorStop(1, 'rgba(255, 224, 102, 0)');
       ctx.fillStyle = headGrad;
       ctx.beginPath();
-      ctx.moveTo(obs.x - hw + 8, obs.y - hh + 4);
-      ctx.lineTo(obs.x - hw - 18, obs.y - hh - 130);
-      ctx.lineTo(obs.x + hw + 18, obs.y - hh - 130);
-      ctx.lineTo(obs.x + hw - 8, obs.y - hh + 4);
+      ctx.moveTo(pObs.x - hw * 0.7, pObs.y - hh);
+      ctx.lineTo(pObs.x - hw * 1.15, pObs.y - hh - headLen);
+      ctx.lineTo(pObs.x + hw * 1.15, pObs.y - hh - headLen);
+      ctx.lineTo(pObs.x + hw * 0.7, pObs.y - hh);
       ctx.closePath();
       ctx.fill();
 
       // Rear Crimson Tail-Light Specular Smear on Asphalt behind Danfo & Keke
-      const tailGrad = ctx.createLinearGradient(obs.x, obs.y + hh, obs.x, obs.y + hh + 75);
+      const tailLen = 68 * s;
+      const tailGrad = ctx.createLinearGradient(
+        pObs.x,
+        pObs.y + hh,
+        pObs.x,
+        pObs.y + hh + tailLen
+      );
       tailGrad.addColorStop(0, `rgba(255, 46, 46, ${wetness * 1.45})`);
       tailGrad.addColorStop(1, 'rgba(255, 46, 46, 0)');
       ctx.fillStyle = tailGrad;
-      ctx.fillRect(obs.x - hw + 6, obs.y + hh, 22, 70);
-      ctx.fillRect(obs.x + hw - 28, obs.y + hh, 22, 70);
+      ctx.fillRect(pObs.x - hw + 4 * s, pObs.y + hh, 20 * s, tailLen);
+      ctx.fillRect(pObs.x + hw - 24 * s, pObs.y + hh, 20 * s, tailLen);
     }
 
     ctx.restore();
   }
 
   /**
-   * 3-Frame Translucent Afterimage Ghost Trail behind the Biker during Nitro Boost
+   * 3-Frame Translucent Afterimage Ghost Trail behind the Biker during Nitro Boost (3D Projected)
    */
   private drawBikeGhostTrail(ctx: CanvasRenderingContext2D) {
     if (this.bikeGhostTrail.length === 0) return;
     const { width, height } = this.player;
     for (const g of this.bikeGhostTrail) {
+      const pG = this.project3D(g.x, g.y);
       ctx.save();
-      ctx.translate(g.x, g.y);
+      ctx.translate(pG.x, pG.y);
+      ctx.scale(pG.scale, pG.scale);
       ctx.rotate(g.tilt);
       ctx.globalAlpha = Math.max(0, g.alpha * 0.55);
       ctx.fillStyle = '#00F5D4';
@@ -2672,13 +2934,13 @@ export class AgberoGameEngine {
 
   private drawRoadHazards(ctx: CanvasRenderingContext2D) {
     for (const haz of this.hazards) {
-      const cx = LANE_CENTERS[haz.lane];
-      const cy = haz.y;
+      const pHaz = this.project3D(LANE_CENTERS[haz.lane], haz.y);
       ctx.save();
-      ctx.translate(cx, cy);
+      ctx.translate(pHaz.x, pHaz.y);
+      // Perspective foreshortening on flat road hazards
+      ctx.scale(pHaz.scale, pHaz.scale * 0.65);
 
       if (haz.type === 'POTHOLE') {
-        // Jagged Asphalt Crater Pothole
         ctx.fillStyle = '#0D0C10';
         ctx.strokeStyle = '#474450';
         ctx.lineWidth = 3.5;
@@ -2692,7 +2954,6 @@ export class AgberoGameEngine {
         ctx.ellipse(0, 3, haz.width * 0.35, haz.height * 0.32, 0.15, 0, Math.PI * 2);
         ctx.fill();
       } else {
-        // Glossy Lagoon Rainwater Puddle
         ctx.fillStyle = 'rgba(56, 189, 248, 0.38)';
         ctx.strokeStyle = '#0D0C10';
         ctx.lineWidth = 3;
@@ -2713,12 +2974,13 @@ export class AgberoGameEngine {
 
   private drawCollectibles(ctx: CanvasRenderingContext2D) {
     for (const item of this.collectibles) {
-      const bounce = Math.sin(item.spinPhase) * 3;
+      const pItem = this.project3D(item.x, item.y);
+      const bounce = Math.sin(item.spinPhase) * 4 * pItem.scale;
       ctx.save();
-      ctx.translate(item.x, item.y + bounce);
+      ctx.translate(pItem.x, pItem.y - 12 * pItem.scale + bounce);
+      ctx.scale(pItem.scale, pItem.scale);
 
       if (item.type === 'NAIRA') {
-        // Glowing Green Naira Cash Bundle (₦)
         ctx.fillStyle = 'rgba(22, 163, 74, 0.25)';
         ctx.beginPath();
         ctx.arc(0, 0, 22, 0, Math.PI * 2);
@@ -2730,7 +2992,6 @@ export class AgberoGameEngine {
         this.fillRoundedRect(ctx, -18, -11, 36, 22, 5);
         this.strokeRoundedRect(ctx, -18, -11, 36, 22, 5);
 
-        // Paper band across Naira stack
         ctx.fillStyle = '#FFCC00';
         ctx.fillRect(-5, -11, 10, 22);
 
@@ -2740,7 +3001,6 @@ export class AgberoGameEngine {
         ctx.textBaseline = 'middle';
         ctx.fillText('₦', 0, 0.5);
       } else {
-        // High-Value Express Courier Parcel Box
         ctx.fillStyle = 'rgba(0, 245, 212, 0.25)';
         ctx.beginPath();
         ctx.arc(0, 0, 26, 0, Math.PI * 2);
@@ -2763,18 +3023,17 @@ export class AgberoGameEngine {
 
   private drawPowerUps(ctx: CanvasRenderingContext2D) {
     for (const pu of this.powerUps) {
-      const cx = LANE_CENTERS[pu.lane];
-      const cy = pu.y;
-      const scale = 1 + Math.sin(pu.pulsePhase) * 0.09;
+      const pPu = this.project3D(LANE_CENTERS[pu.lane], pu.y);
+      const pulseScale = (1 + Math.sin(pu.pulsePhase) * 0.09) * pPu.scale;
 
       ctx.save();
-      ctx.translate(cx, cy);
-      ctx.scale(scale, scale);
+      ctx.translate(pPu.x, pPu.y - 16 * pPu.scale);
+      ctx.scale(pulseScale, pulseScale);
 
       const isBooster = pu.type === 'BOOSTER';
       const isMagnet = pu.type === 'MAGNET';
       const primaryColor = isBooster ? '#00F5D4' : isMagnet ? '#A855F7' : '#38BDF8';
-      const secondaryColor = isBooster ? '#FF2E2E' : isMagnet ? '#FFCC00' : '#FFCC00';
+      const secondaryColor = isBooster ? '#FF2E2E' : '#FFCC00';
 
       ctx.fillStyle = isBooster
         ? 'rgba(0, 245, 212, 0.22)'
@@ -2816,14 +3075,15 @@ export class AgberoGameEngine {
 
   private drawExhaustParticles(ctx: CanvasRenderingContext2D) {
     for (const p of this.exhaustParticles) {
+      const p3 = this.project3D(p.x, p.y);
       const alpha = Math.max(0, 1 - p.life / p.maxLife);
       ctx.save();
       ctx.globalAlpha = alpha * 0.8;
       ctx.fillStyle = p.color;
       ctx.strokeStyle = '#0D0C10';
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = Math.max(1, 2.5 * p3.scale);
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+      ctx.arc(p3.x, p3.y - 10 * p3.scale, Math.max(1.5, p.radius * p3.scale), 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
       ctx.restore();
@@ -2831,16 +3091,13 @@ export class AgberoGameEngine {
   }
 
   private drawObstacle(ctx: CanvasRenderingContext2D, obs: Obstacle) {
-    const cx = obs.x;
-    const cy = obs.y;
+    const pObs = this.project3D(obs.x, obs.y);
 
     ctx.save();
-    ctx.translate(cx, cy);
-
-    // Slight tilt & diesel engine chassis vibration on Danfo / Keke
-    const engineRattle =
-      obs.type !== 'BARRICADE' ? Math.sin(this.elapsedTime * 42 + obs.id) * 1.1 : 0;
-    ctx.translate(engineRattle, 0);
+    // Anchor at projected 3D road position and scale by 3D perspective depth!
+    // Apply 0.78 vertical foreshortening so vehicles look like 3D behind-the-bike rear/3/4 models
+    ctx.translate(pObs.x, pObs.y - 18 * pObs.scale);
+    ctx.scale(pObs.scale, pObs.scale * 0.78);
 
     if (obs.isSwitchingLane) {
       const targetX = LANE_CENTERS[obs.targetLane];
@@ -3305,283 +3562,321 @@ export class AgberoGameEngine {
 
   private drawPlayerBike(ctx: CanvasRenderingContext2D) {
     const { x, y, width, height, tiltAngle, bobPhase, isWheelie } = this.player;
+    const pBike = this.project3D(x, y);
     const isBoosting =
       this.boosterTimeRemaining > 0 || this.player.slipstreamBoostTimer > 0;
-    const engineBob = Math.sin(bobPhase) * (isBoosting ? 2.4 : 1.6);
+    const engineBob = Math.sin(bobPhase * 0.45) * 0.45;
     const skin = BIKE_SKINS[this.saveData.selectedSkin] || BIKE_SKINS.RED_BOXER;
 
     ctx.save();
-    ctx.translate(x, y + engineBob);
-    ctx.rotate(tiltAngle);
+    ctx.translate(pBike.x, pBike.y + engineBob);
+    ctx.rotate(tiltAngle * 0.85);
 
-    // If popping a ONE-WHEELIE Overdrive Stunt, pitch front of bike upward & scale slightly!
+    // If popping a ONE-WHEELIE Overdrive Stunt, pitch front of bike upward & rear tire down in 3D!
     if (isWheelie) {
-      ctx.translate(0, -10);
-      ctx.scale(1.06, 0.91);
+      ctx.translate(0, -14);
+      ctx.scale(1.08, 1.04);
     }
 
     const hw = width / 2;
     const hh = height / 2;
 
-    // 0. ONE-WHEELIE 2X OVERDRIVE GOLDEN STUNT RING
+    // 0. ONE-WHEELIE 2X OVERDRIVE GOLDEN STUNT RING ON 3D ASPHALT
     if (isWheelie) {
       ctx.strokeStyle = '#FFCC00';
       ctx.lineWidth = 3.5;
       ctx.setLineDash([8, 6]);
       ctx.beginPath();
-      ctx.arc(0, 12, width * 0.72, 0, Math.PI * 2);
+      ctx.ellipse(0, 26, width * 0.78, width * 0.32, 0, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
     }
 
-    // 1. NITRO BOOSTER HYPER-FLAME JETS
+    // 1. 3D Forward Headlight Beam Cone Projecting Ahead onto the Highway
+    const beamGrad = ctx.createLinearGradient(0, -hh + 10, 0, -hh - 175);
+    beamGrad.addColorStop(0, isBoosting ? 'rgba(0, 245, 212, 0.62)' : skin.beamColor);
+    beamGrad.addColorStop(1, 'rgba(255, 204, 0, 0)');
+    ctx.fillStyle = beamGrad;
+    ctx.beginPath();
+    ctx.moveTo(-12, -hh + 14);
+    ctx.lineTo(-56, -hh - 175);
+    ctx.lineTo(56, -hh - 175);
+    ctx.lineTo(12, -hh + 14);
+    ctx.closePath();
+    ctx.fill();
+
+    // 2. 3D Perspective Ground Shadow Under Bike
+    ctx.fillStyle = 'rgba(8, 7, 12, 0.84)';
+    ctx.beginPath();
+    ctx.ellipse(4, 24, hw * 0.78, 22, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 3. Wide 3D Handlebars, Brake Levers & Bar-End Rearview Mirrors (Ahead of Rider)
+    const barY = isWheelie ? -hh - 6 : -hh + 14;
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 7.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-hw - 8, barY + 5);
+    ctx.lineTo(-14, barY - 2);
+    ctx.lineTo(14, barY - 2);
+    ctx.lineTo(hw + 8, barY + 5);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#CBD5E1';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-hw - 2, barY + 4);
+    ctx.lineTo(0, barY - 2);
+    ctx.lineTo(hw + 2, barY + 4);
+    ctx.stroke();
+
+    // Glowing Digital Speedometer Cluster between handlebars
+    ctx.fillStyle = '#0F172A';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 2.5;
+    this.fillRoundedRect(ctx, -9, barY - 8, 18, 9, 3);
+    this.strokeRoundedRect(ctx, -9, barY - 8, 18, 9, 3);
+    ctx.fillStyle = '#00F5D4';
+    ctx.fillRect(-6, barY - 5, 12, 3);
+
+    // Left & Right 3D Side Mirrors on stalks
+    for (const side of [-1, 1]) {
+      const mx = side * (hw + 6);
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(side * (hw - 4), barY + 2);
+      ctx.lineTo(mx, barY - 10);
+      ctx.stroke();
+
+      ctx.fillStyle = '#38BDF8';
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.ellipse(mx, barY - 12, 7.5, 5, side * -0.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Handguards in Selected Garage Skin Color
+    ctx.fillStyle = skin.primaryColor;
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3;
+    this.fillRoundedRect(ctx, -hw - 10, barY + 1, 13, 8, 3);
+    this.strokeRoundedRect(ctx, -hw - 10, barY + 1, 13, 8, 3);
+    this.fillRoundedRect(ctx, hw - 3, barY + 1, 13, 8, 3);
+    this.strokeRoundedRect(ctx, hw - 3, barY + 1, 13, 8, 3);
+
+    // 4. Sculpted Fuel Tank & Rider Knees Gripping Tank (Seen in 3D Rear-Chase Elevation)
+    const tankGrad = ctx.createLinearGradient(-18, 0, 18, 0);
+    tankGrad.addColorStop(0, skin.primaryColor);
+    tankGrad.addColorStop(0.5, skin.secondaryColor);
+    tankGrad.addColorStop(1, '#0D0C10');
+    ctx.fillStyle = tankGrad;
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 4;
+    this.fillRoundedRect(ctx, -17, barY + 3, 34, 22, 9);
+    this.strokeRoundedRect(ctx, -17, barY + 3, 34, 22, 9);
+
+    // Rider Knees & Boots tucked against bike frame
+    ctx.fillStyle = '#1E293B';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3.5;
+    this.fillRoundedRect(ctx, -25, -8, 10, 22, 5);
+    this.strokeRoundedRect(ctx, -25, -8, 10, 22, 5);
+    this.fillRoundedRect(ctx, 15, -8, 10, 22, 5);
+    this.strokeRoundedRect(ctx, 15, -8, 10, 22, 5);
+
+    // 5. Rider Arms Reaching Forward to Grips
+    ctx.strokeStyle = '#1E1D26';
+    ctx.lineWidth = 9.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-19, -12);
+    ctx.lineTo(-hw - 2, barY + 4);
+    ctx.moveTo(19, -12);
+    ctx.lineTo(hw + 2, barY + 4);
+    ctx.stroke();
+
+    // 6. Rider Back & Torso in Iconic Yellow Agbero Reflective Vest (3D Rear View)
+    const torsoY = isWheelie ? -24 : -20;
+    const vestGrad = ctx.createLinearGradient(-22, torsoY, 22, torsoY);
+    vestGrad.addColorStop(0, '#FFD633');
+    vestGrad.addColorStop(0.5, '#FFCC00');
+    vestGrad.addColorStop(1, '#D99B00');
+    ctx.fillStyle = vestGrad;
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 4.5;
+    ctx.beginPath();
+    ctx.moveTo(-21, torsoY);
+    ctx.lineTo(21, torsoY);
+    ctx.lineTo(17, torsoY + 32);
+    ctx.lineTo(-17, torsoY + 32);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Reflective Silver/White X-Straps on Rider's Back
+    ctx.strokeStyle = '#FFFDF7';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(-14, torsoY + 4);
+    ctx.lineTo(12, torsoY + 28);
+    ctx.moveTo(14, torsoY + 4);
+    ctx.lineTo(-12, torsoY + 28);
+    ctx.stroke();
+
+    // 7. Rider Crash Helmet (Seen from Directly Behind with Center Racing Stripe)
+    const helmY = torsoY - 10;
+    ctx.fillStyle = skin.secondaryColor;
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 4.5;
+    ctx.beginPath();
+    ctx.arc(0, helmY, 15.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Helmet Racing Stripe & Rear Aero Vent
+    ctx.fillStyle = skin.accentColor;
+    ctx.fillRect(-3.5, helmY - 14, 7, 26);
+    ctx.fillStyle = '#0D0C10';
+    ctx.fillRect(-7, helmY + 4, 14, 4);
+
+    // Specular highlight on top-left of helmet dome
+    ctx.fillStyle = 'rgba(255, 253, 247, 0.75)';
+    ctx.beginPath();
+    ctx.arc(-6, helmY - 6, 3.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Fluttering Red/Skin-Colored Dispatch Scarf whipping backward in the wind
+    const scarfWave = Math.sin(this.elapsedTime * 20) * 6;
+    ctx.fillStyle = skin.primaryColor;
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-4, helmY + 11);
+    ctx.quadraticCurveTo(-18, helmY + 20 + scarfWave, -15 + scarfWave, helmY + 33);
+    ctx.lineTo(-2, helmY + 22);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 8. 3D Rear Tire, Swingarm, Twin Shock Absorbers & Dual Chrome Exhaust Pipes
+    // Dual Chrome Exhaust Canisters pointing straight back at camera
+    for (const exX of [-17, 17]) {
+      ctx.fillStyle = '#94A3B8';
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 3.5;
+      this.fillRoundedRect(ctx, exX - 4.5, 14, 9, 24, 4);
+      this.strokeRoundedRect(ctx, exX - 4.5, 14, 9, 24, 4);
+
+      // Glowing Exhaust Tailpipe Opening facing camera
+      ctx.fillStyle = isBoosting ? '#00F5D4' : '#1E1D26';
+      ctx.beginPath();
+      ctx.arc(exX, 34, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // NITRO BOOSTER 3D HYPER-FLAME JETS BLASTING TOWARD CAMERA
     if (isBoosting) {
-      const flameLen = 58 + Math.random() * 26;
-      const flameGrad = ctx.createLinearGradient(0, hh - 10, 0, hh + flameLen);
+      const flameLen = 38 + Math.random() * 22;
+      const flameGrad = ctx.createLinearGradient(0, 32, 0, 32 + flameLen);
       flameGrad.addColorStop(0, '#FFFDF7');
       flameGrad.addColorStop(0.35, '#00F5D4');
       flameGrad.addColorStop(0.75, '#2563EB');
       flameGrad.addColorStop(1, 'rgba(37, 99, 235, 0)');
       ctx.fillStyle = flameGrad;
 
-      for (const fx of [-12, 12]) {
+      for (const fx of [-17, 17]) {
         ctx.beginPath();
-        ctx.moveTo(fx - 7, hh - 14);
-        ctx.lineTo(fx, hh + flameLen);
-        ctx.lineTo(fx + 7, hh - 14);
+        ctx.moveTo(fx - 7, 34);
+        ctx.lineTo(fx, 34 + flameLen);
+        ctx.lineTo(fx + 7, 34);
         ctx.closePath();
         ctx.fill();
       }
     }
 
-    if (this.assets.playerBike) {
-      ctx.drawImage(this.assets.playerBike, -width / 2, -height / 2, width, height);
-      if (this.hasShield) {
-        this.drawShieldAura(ctx, width, height);
-      }
-      ctx.restore();
-      return;
+    // Fat 3D Rear Motorcycle Tire & Animated Tread Grooves
+    ctx.fillStyle = '#14131A';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 4.5;
+    this.fillRoundedRect(ctx, -10, 12, 20, 34, 7);
+    this.strokeRoundedRect(ctx, -10, 12, 20, 34, 7);
+
+    // Animated spinning rear tire tread lines
+    const treadScroll = (this.roadScrollOffset * 0.5) % 9;
+    ctx.strokeStyle = '#2E2C3B';
+    ctx.lineWidth = 2.5;
+    for (let ty = 15 + treadScroll; ty < 42; ty += 9) {
+      ctx.beginPath();
+      ctx.moveTo(-7, ty);
+      ctx.lineTo(7, ty);
+      ctx.stroke();
     }
 
-    // 2. Headlight Beam Cone
-    const beamGrad = ctx.createLinearGradient(0, -hh, 0, -hh - 155);
-    beamGrad.addColorStop(0, isBoosting ? 'rgba(0, 245, 212, 0.58)' : skin.beamColor);
-    beamGrad.addColorStop(1, 'rgba(255, 204, 0, 0)');
-    ctx.fillStyle = beamGrad;
-    ctx.beginPath();
-    ctx.moveTo(-11, -hh + 6);
-    ctx.lineTo(-46, -hh - 155);
-    ctx.lineTo(46, -hh - 155);
-    ctx.lineTo(11, -hh + 6);
-    ctx.closePath();
-    ctx.fill();
-
-    // 3. Dynamic Drop Shadow
-    ctx.fillStyle = 'rgba(13, 12, 16, 0.78)';
-    ctx.beginPath();
-    ctx.ellipse(7, 9, hw * 0.68, hh * 0.9, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 4. Dual Chrome Exhaust Muffler Pipes
-    ctx.fillStyle = '#94A3B8';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 3.5;
-    this.fillRoundedRect(ctx, -19, 14, 7, 34, 3);
-    this.strokeRoundedRect(ctx, -19, 14, 7, 34, 3);
-    this.fillRoundedRect(ctx, 12, 14, 7, 34, 3);
-    this.strokeRoundedRect(ctx, 12, 14, 7, 34, 3);
-
-    // 5. Front Tire with Animated Spinning Rim/Tread Streaks & Forks
-    ctx.fillStyle = '#18181F';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 4;
-    this.fillRoundedRect(ctx, -7.5, -hh - 8, 15, 30, 7);
-    this.strokeRoundedRect(ctx, -7.5, -hh - 8, 15, 30, 7);
-
-    // Spinning tire tread motion blur streak
-    const treadOffset = (this.roadScrollOffset * 0.45) % 14;
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-    ctx.fillRect(-3, -hh - 5 + treadOffset, 6, 5);
-
-    ctx.fillStyle = '#CBD5E1';
-    ctx.fillRect(-10, -hh + 8, 4, 16);
-    ctx.fillRect(6, -hh + 8, 4, 16);
-
-    // 6. Wide Handlebars & Side Mirrors
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 7.5;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(-hw + 1, -hh + 22);
-    ctx.lineTo(0, -hh + 14);
-    ctx.lineTo(hw - 1, -hh + 22);
-    ctx.stroke();
-
-    ctx.strokeStyle = '#94A3B8';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(-hw + 10, -hh + 20);
-    ctx.lineTo(0, -hh + 14);
-    ctx.lineTo(hw - 10, -hh + 20);
-    ctx.stroke();
-
-    ctx.fillStyle = '#38BDF8';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(-hw + 6, -hh + 11, 5.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(hw - 6, -hh + 11, 5.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = skin.primaryColor;
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 3;
-    ctx.fillRect(-hw, -hh + 17, 11, 8);
-    ctx.strokeRect(-hw, -hh + 17, 11, 8);
-    ctx.fillRect(hw - 11, -hh + 17, 11, 8);
-    ctx.strokeRect(hw - 11, -hh + 17, 11, 8);
-
-    // 7. Sculpted Okada Fuel Tank using Selected Garage Skin!
-    const tankGrad = ctx.createLinearGradient(-18, 0, 18, 0);
-    tankGrad.addColorStop(0, skin.primaryColor);
-    tankGrad.addColorStop(0.6, skin.secondaryColor);
-    tankGrad.addColorStop(1, '#0D0C10');
-    ctx.fillStyle = tankGrad;
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 4.5;
-    ctx.beginPath();
-    ctx.moveTo(0, -hh + 5);
-    ctx.lineTo(17, -hh + 27);
-    ctx.lineTo(14, 18);
-    ctx.lineTo(-14, 18);
-    ctx.lineTo(-17, -hh + 27);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = skin.accentColor;
-    ctx.fillRect(-3.5, -hh + 16, 7, 22);
-    ctx.fillStyle = '#E2E8F0';
-    ctx.beginPath();
-    ctx.arc(0, -hh + 25, 4, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Rider Knees
-    ctx.fillStyle = '#1E293B';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 3.5;
-    this.fillRoundedRect(ctx, -23, -12, 8, 18, 4);
-    this.strokeRoundedRect(ctx, -23, -12, 8, 18, 4);
-    this.fillRoundedRect(ctx, 15, -12, 8, 18, 4);
-    this.strokeRoundedRect(ctx, 15, -12, 8, 18, 4);
-
-    // 8. Rider Arms & Agbero Vest
-    ctx.strokeStyle = '#1E1D26';
-    ctx.lineWidth = 9;
-    ctx.beginPath();
-    ctx.moveTo(-17, -6);
-    ctx.lineTo(-hw + 6, -hh + 22);
-    ctx.moveTo(17, -6);
-    ctx.lineTo(hw - 6, -hh + 22);
-    ctx.stroke();
-
-    ctx.fillStyle = '#FFCC00';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 4.5;
-    this.fillRoundedRect(ctx, -23, -19, 46, 32, 11);
-    this.strokeRoundedRect(ctx, -23, -19, 46, 32, 11);
-
-    ctx.fillStyle = '#1E1D26';
-    ctx.fillRect(-22, -16, 7, 14);
-    ctx.fillRect(15, -16, 7, 14);
-
-    ctx.strokeStyle = '#FFFDF7';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(-13, -14);
-    ctx.lineTo(13, 8);
-    ctx.moveTo(13, -14);
-    ctx.lineTo(-13, 8);
-    ctx.stroke();
-
-    // 9. Fluttering Dispatch Neck Scarf
-    const scarfWave = Math.sin(this.elapsedTime * 18) * 5;
-    ctx.fillStyle = skin.primaryColor;
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(-5, -2);
-    ctx.quadraticCurveTo(-16, 8 + scarfWave, -12 + scarfWave, 20);
-    ctx.lineTo(-3, 12);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-
-    // 10. Rider Crash Helmet
+    // 9. 3D Rear "EXPRESS" Courier Cargo Box (With Top Face + Rear Face Facing Camera!)
+    const boxW = 42;
+    const boxY = 0;
+    // Top Lid of 3D Cargo Box
     ctx.fillStyle = skin.secondaryColor;
     ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 4.5;
+    ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.arc(0, -11, 15, 0, Math.PI * 2);
+    ctx.moveTo(-boxW / 2 + 4, boxY - 6);
+    ctx.lineTo(boxW / 2 - 4, boxY - 6);
+    ctx.lineTo(boxW / 2, boxY + 3);
+    ctx.lineTo(-boxW / 2, boxY + 3);
+    ctx.closePath();
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = '#0F172A';
-    ctx.beginPath();
-    ctx.arc(0, -13, 12.5, Math.PI * 1.15, Math.PI * 1.85);
-    ctx.fill();
-
-    ctx.fillStyle = skin.accentColor;
-    ctx.fillRect(-3.5, -24, 7, 22);
-    ctx.fillStyle = '#FFFDF7';
-    ctx.beginPath();
-    ctx.arc(-6, -14, 3.8, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 11. Rear Express Dispatch Cargo Box
-    const boxW = 40;
-    const boxH = 32;
+    // Rear Vertical Face of Cargo Box Facing Camera
     ctx.fillStyle = skin.primaryColor;
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 4.5;
-    this.fillRoundedRect(ctx, -boxW / 2, 13, boxW, boxH, 7);
-    this.strokeRoundedRect(ctx, -boxW / 2, 13, boxW, boxH, 7);
+    this.fillRoundedRect(ctx, -boxW / 2, boxY + 1, boxW, 22, 5);
+    this.strokeRoundedRect(ctx, -boxW / 2, boxY + 1, boxW, 22, 5);
 
-    ctx.fillStyle = '#0D0C10';
-    ctx.fillRect(-boxW / 2 + 7, 13, 4, boxH);
-    ctx.fillRect(boxW / 2 - 11, 13, 4, boxH);
-
+    // Yellow "EXPRESS" Plate on Rear Face of Cargo Box
     ctx.fillStyle = '#FFCC00';
-    ctx.fillRect(-boxW / 2 + 3, 23, boxW - 6, 11);
+    ctx.fillRect(-boxW / 2 + 4, boxY + 6, boxW - 8, 12);
     ctx.fillStyle = '#0D0C10';
-    ctx.font = '900 8px "Inter", sans-serif';
+    ctx.font = '900 8.5px "Inter", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('EXPRESS', 0, 28.5);
+    ctx.fillText('EXPRESS', 0, boxY + 12.5);
 
-    ctx.fillStyle = isBoosting ? '#00F5D4' : '#FF3B00';
+    // Bright Glowing LED Brake / Tail-Light Bar & Nigerian License Plate under Cargo Box
+    ctx.fillStyle = isBoosting ? '#00F5D4' : '#FF2E2E';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3;
+    this.fillRoundedRect(ctx, -14, boxY + 22, 28, 7, 3);
+    this.strokeRoundedRect(ctx, -14, boxY + 22, 28, 7, 3);
+
+    // White/Green Lagos Okada Number Plate ("LSD-404K")
+    ctx.fillStyle = '#FFFDF7';
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 2.5;
-    ctx.fillRect(-13, 45, 26, 6);
-    ctx.strokeRect(-13, 45, 26, 6);
+    ctx.fillRect(-9, boxY + 29, 18, 8);
+    ctx.strokeRect(-9, boxY + 29, 18, 8);
+    ctx.fillStyle = '#15803D';
+    ctx.fillRect(-7, boxY + 31, 14, 4);
 
-    // 12. Active Owo Magnet Aura Ring
+    // 10. Active Owo Magnet Aura Ring in 3D Perspective
     if (this.magnetTimeRemaining > 0) {
       const magPulse = 0.55 + Math.sin(this.elapsedTime * 12) * 0.25;
       ctx.strokeStyle = `rgba(168, 85, 247, ${magPulse})`;
       ctx.lineWidth = 3.5;
       ctx.setLineDash([10, 10]);
       ctx.beginPath();
-      ctx.arc(0, 0, width * 0.95, 0, Math.PI * 2);
+      ctx.ellipse(0, 12, width * 0.98, width * 0.46, 0, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
     }
 
-    // 13. Active AGBERO JUJU SHIELD Energy Dome
+    // 11. Active AGBERO JUJU SHIELD Energy Dome
     if (this.hasShield) {
       this.drawShieldAura(ctx, width, height);
     }
@@ -3610,7 +3905,7 @@ export class AgberoGameEngine {
   }
 
   /**
-   * 1A. Draw VIP Politician Siren Convoy ("Oga Siren") Warning Strip & Armored Black SUV
+   * 1A. Draw VIP Politician Siren Convoy ("Oga Siren") Warning Strip & Armored Black SUV in 3D Perspective
    */
   private drawVipConvoy(ctx: CanvasRenderingContext2D) {
     if (!this.vipConvoy.active) return;
@@ -3618,39 +3913,47 @@ export class AgberoGameEngine {
     const isRedFlash = Math.floor(this.vipConvoy.sirenPhase) % 2 === 0;
 
     ctx.save();
-    // If still in 2.0s warning phase, draw flashing Red/Blue Siren Danger Zone at bottom of lane
+    // If still in 2.0s warning phase, draw 3D perspective flashing Red/Blue Siren Danger Lane Quad & Bottom Alert Pill
     if (this.vipConvoy.warningTimer > 0) {
-      const warnY = LOGICAL_HEIGHT - 55;
-      ctx.fillStyle = isRedFlash
-        ? 'rgba(255, 46, 46, 0.25)'
-        : 'rgba(37, 99, 235, 0.25)';
-      ctx.fillRect(cx - LANE_WIDTH / 2 + 8, 0, LANE_WIDTH - 16, LOGICAL_HEIGHT);
+      const laneLeft = cx - LANE_WIDTH / 2 + 8;
+      const laneRight = cx + LANE_WIDTH / 2 - 8;
+      this.draw3DQuad(
+        ctx,
+        laneLeft,
+        -480,
+        laneRight,
+        880,
+        isRedFlash ? 'rgba(255, 46, 46, 0.24)' : 'rgba(37, 99, 235, 0.24)'
+      );
 
+      const pWarn = this.project3D(cx, 635);
       ctx.fillStyle = isRedFlash ? '#FF2E2E' : '#2563EB';
       ctx.strokeStyle = '#0D0C10';
       ctx.lineWidth = 4;
-      this.fillRoundedRect(ctx, cx - 72, warnY - 24, 144, 44, 8);
-      this.strokeRoundedRect(ctx, cx - 72, warnY - 24, 144, 44, 8);
+      this.fillRoundedRect(ctx, pWarn.x - 72, pWarn.y - 24, 144, 44, 8);
+      this.strokeRoundedRect(ctx, pWarn.x - 72, pWarn.y - 24, 144, 44, 8);
 
       ctx.fillStyle = '#FFFDF7';
       ctx.font = '900 12px "Black Ops One", "Impact", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('▲ OGA SIREN ▲', cx, warnY - 7);
+      ctx.fillText('▲ OGA SIREN ▲', pWarn.x, pWarn.y - 7);
       ctx.font = '900 10px "JetBrains Mono", monospace';
-      ctx.fillText(`CLEAR LANE ${this.vipConvoy.warningTimer.toFixed(1)}s`, cx, warnY + 9);
+      ctx.fillText(`CLEAR LANE ${this.vipConvoy.warningTimer.toFixed(1)}s`, pWarn.x, pWarn.y + 9);
       ctx.restore();
       return;
     }
 
-    // Draw Black Armored VIP Politician Prado / V8 SUV rocketing upward
+    // Draw Black Armored VIP Politician Prado / V8 SUV rocketing forward in 3D perspective
+    const pVip = this.project3D(cx, this.vipConvoy.y);
     const w = 96;
     const h = 176;
     const hw = w / 2;
     const hh = h / 2;
-    ctx.translate(cx, this.vipConvoy.y);
+    ctx.translate(pVip.x, pVip.y - 18 * pVip.scale);
+    ctx.scale(pVip.scale, pVip.scale * 0.78);
 
-    // High-beam Xenon Headlight cones projecting UPWARD
+    // High-beam Xenon Headlight cones projecting UPWARD toward horizon
     const beamGrad = ctx.createLinearGradient(0, -hh, 0, -hh - 210);
     beamGrad.addColorStop(0, 'rgba(56, 189, 248, 0.65)');
     beamGrad.addColorStop(1, 'rgba(56, 189, 248, 0)');
@@ -3709,21 +4012,22 @@ export class AgberoGameEngine {
   }
 
   /**
-   * 1B. Draw "Agbero Chairman" Armored King Danfo Boss Bus
+   * 1B. Draw "Agbero Chairman" Armored King Danfo Boss Bus in 3D Perspective
    */
   private drawBossDanfo(ctx: CanvasRenderingContext2D) {
     if (!this.bossDanfo.active) return;
 
+    const pBoss = this.project3D(this.bossDanfo.x, this.bossDanfo.y);
+    // Keep Boss Danfo clearly readable ahead on the 3D highway
+    const bossScale = Math.max(0.56, pBoss.scale);
     const w = 118;
     const h = 198;
     const hw = w / 2;
     const hh = h / 2;
 
     ctx.save();
-    ctx.translate(this.bossDanfo.x, this.bossDanfo.y);
-
-    // Heavy Engine Rattle
-    ctx.translate(Math.sin(this.elapsedTime * 50) * 1.8, 0);
+    ctx.translate(pBoss.x, pBoss.y - 18 * bossScale);
+    ctx.scale(bossScale, bossScale * 0.78);
 
     // Drop Shadow
     ctx.fillStyle = 'rgba(13, 12, 16, 0.82)';
@@ -3769,57 +4073,59 @@ export class AgberoGameEngine {
   }
 
   /**
-   * 2. Draw Slipstream / Tailgate Drafting Arc Meter around Biker
+   * 2. Draw Slipstream / Tailgate Drafting Arc Meter around Biker in 3D Perspective
    */
   private drawSlipstreamDraftMeter(ctx: CanvasRenderingContext2D) {
     if (this.player.slipstreamProgress <= 5) return;
     const pct = this.player.slipstreamProgress / 100;
+    const pBike = this.project3D(this.player.x, this.player.y);
 
     ctx.save();
-    ctx.translate(this.player.x, this.player.y);
+    ctx.translate(pBike.x, pBike.y);
 
-    // Aerodynamic Wind Cone Streaming off Vehicle Ahead
-    ctx.strokeStyle = `rgba(0, 245, 212, ${0.25 + pct * 0.55})`;
+    // 3D Aerodynamic Wind Cone Streaming off Vehicle Ahead toward Player Bike
+    ctx.strokeStyle = `rgba(0, 245, 212, ${0.28 + pct * 0.55})`;
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.moveTo(-26, -75);
-    ctx.lineTo(-38, 35);
-    ctx.moveTo(26, -75);
-    ctx.lineTo(38, 35);
+    ctx.moveTo(-18, -68);
+    ctx.lineTo(-42, 28);
+    ctx.moveTo(18, -68);
+    ctx.lineTo(42, 28);
     ctx.stroke();
 
-    // Circular Draft Charge Meter above Front Wheel
+    // Circular Draft Charge Meter above Rider's Helmet
     ctx.fillStyle = '#0D0C10';
     ctx.strokeStyle = pct >= 0.85 ? '#00F5D4' : '#FFCC00';
     ctx.lineWidth = 3;
-    this.fillRoundedRect(ctx, -44, -84, 88, 16, 4);
-    this.strokeRoundedRect(ctx, -44, -84, 88, 16, 4);
+    this.fillRoundedRect(ctx, -44, -76, 88, 16, 4);
+    this.strokeRoundedRect(ctx, -44, -76, 88, 16, 4);
 
     ctx.fillStyle = pct >= 0.85 ? '#00F5D4' : '#FFCC00';
-    ctx.fillRect(-41, -81, 82 * pct, 10);
+    ctx.fillRect(-41, -73, 82 * pct, 10);
 
     ctx.fillStyle = '#0D0C10';
     ctx.font = '900 8.5px "JetBrains Mono", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(pct >= 0.85 ? 'SWERVE NOW!' : 'DRAFTING...', 0, -76);
+    ctx.fillText(pct >= 0.85 ? 'SWERVE NOW!' : 'DRAFTING...', 0, -68);
 
     ctx.restore();
   }
 
   /**
-   * 3. Draw Comic-Book Pidgin Slang Speech Bubbles
+   * 3. Draw Comic-Book Pidgin Slang Speech Bubbles in 3D Perspective
    */
   private drawSpeechBubbles(ctx: CanvasRenderingContext2D) {
     for (const sb of this.speechBubbles) {
+      const pSb = this.project3D(sb.x, sb.y);
       ctx.save();
       ctx.globalAlpha = Math.max(0, Math.min(1, sb.life * 1.2));
       ctx.font = '900 12px "Inter", sans-serif';
       const textW = ctx.measureText(sb.text).width;
       const boxW = textW + 24;
       const boxH = 28;
-      const bx = Math.max(ROAD_LEFT + boxW / 2, Math.min(ROAD_RIGHT - boxW / 2, sb.x));
-      const by = sb.y;
+      const bx = pSb.x;
+      const by = Math.max(185, pSb.y - 36 * pSb.scale);
 
       // Hard Comic Shadow
       ctx.fillStyle = '#0D0C10';
@@ -3852,14 +4158,17 @@ export class AgberoGameEngine {
 
   private drawHornShockwave(ctx: CanvasRenderingContext2D) {
     if (this.hornShockwaveAlpha <= 0) return;
+    const pBike = this.project3D(this.player.x, this.player.y - 25);
     ctx.save();
     ctx.strokeStyle = `rgba(255, 204, 0, ${this.hornShockwaveAlpha})`;
     ctx.lineWidth = 8;
     ctx.beginPath();
-    ctx.arc(
-      this.player.x,
-      this.player.y - 30,
+    ctx.ellipse(
+      pBike.x,
+      pBike.y,
       this.hornShockwaveRadius,
+      this.hornShockwaveRadius * 0.55,
+      0,
       Math.PI * 1.1,
       Math.PI * 1.9
     );
@@ -3867,37 +4176,60 @@ export class AgberoGameEngine {
     ctx.restore();
   }
 
+  /**
+   * Draw 3D Overhead Highway Gantry & Nigerian Green/White Expressway Signboard Spanning the 3D Road
+   */
   private drawLandmarkGates(ctx: CanvasRenderingContext2D) {
     for (const lm of this.landmarks) {
+      if (lm.y < -480 || lm.y > 760) continue;
+      const pLeft = this.project3D(ROAD_LEFT - 18, lm.y);
+      const pRight = this.project3D(ROAD_RIGHT + 18, lm.y);
+      const pCenter = this.project3D(ROAD_CENTER_X, lm.y);
+      const s = pCenter.scale;
+      const pillarH = 148 * s;
+      const beamY = pCenter.y - pillarH;
+      const beamH = 44 * s;
+      const spanW = pRight.x - pLeft.x;
+
       ctx.save();
-      // Overhead Steel Expressway Gantry Spanning All 3 Lanes
+      // Left & Right Vertical Steel Gantry Support Pillars anchored to concrete barriers
       ctx.fillStyle = '#1E1D26';
       ctx.strokeStyle = '#0D0C10';
-      ctx.lineWidth = 5;
-      ctx.fillRect(ROAD_LEFT - 25, lm.y - 26, ROAD_WIDTH + 50, 52);
-      ctx.strokeRect(ROAD_LEFT - 25, lm.y - 26, ROAD_WIDTH + 50, 52);
+      ctx.lineWidth = Math.max(2, 4 * s);
+      const pillarW = Math.max(5, 14 * s);
+      ctx.fillRect(pLeft.x - pillarW / 2, beamY, pillarW, pillarH);
+      ctx.strokeRect(pLeft.x - pillarW / 2, beamY, pillarW, pillarH);
+      ctx.fillRect(pRight.x - pillarW / 2, beamY, pillarW, pillarH);
+      ctx.strokeRect(pRight.x - pillarW / 2, beamY, pillarW, pillarH);
 
-      // Green & White Nigerian Highway Signboard
+      // Overhead Steel Truss Crossbeam Spanning All 3 Lanes
+      ctx.fillStyle = '#1E1D26';
+      ctx.fillRect(pLeft.x - pillarW / 2, beamY - beamH / 2, spanW + pillarW, beamH);
+      ctx.strokeRect(pLeft.x - pillarW / 2, beamY - beamH / 2, spanW + pillarW, beamH);
+
+      // Green & White Nigerian Federal Highway Signboard mounted on Overhead Gantry
+      const signPad = 24 * s;
+      const signH = 34 * s;
       ctx.fillStyle = '#15803D';
-      ctx.fillRect(ROAD_LEFT + 20, lm.y - 20, ROAD_WIDTH - 40, 40);
+      ctx.fillRect(pLeft.x + signPad, beamY - signH / 2, spanW - signPad * 2, signH);
       ctx.strokeStyle = '#FFFDF7';
-      ctx.lineWidth = 2.5;
-      ctx.strokeRect(ROAD_LEFT + 20, lm.y - 20, ROAD_WIDTH - 40, 40);
+      ctx.lineWidth = Math.max(1.5, 2.5 * s);
+      ctx.strokeRect(pLeft.x + signPad, beamY - signH / 2, spanW - signPad * 2, signH);
 
       ctx.fillStyle = '#FFFDF7';
-      ctx.font = '900 15px "Black Ops One", "Impact", sans-serif';
+      ctx.font = `900 ${Math.max(8, Math.round(15 * s))}px "Black Ops One", "Impact", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(lm.title, ROAD_CENTER_X, lm.y);
+      ctx.fillText(lm.title, pCenter.x, beamY);
       ctx.restore();
     }
   }
 
   /**
-   * AAA Next-Gen Post-Processing Lighting & Shader Pass:
+   * AAA Next-Gen 3D Post-Processing Lighting & Shader Pass:
    * - Additive ('screen') HDR Bloom for vehicle brake lights, anamorphic horizontal lens flares,
-   *   overhead sodium-vapor / neon streetlight pools sweeping across bus roofs and asphalt,
-   *   player headlight bloom, and atmospheric horizon depth haze + edge vignette.
+   *   3D projected streetlight pools sweeping across the highway, player headlight bloom,
+   *   and atmospheric horizon depth haze + edge vignette.
    */
   private drawPostProcessingLightingPass(
     ctx: CanvasRenderingContext2D,
@@ -3913,122 +4245,109 @@ export class AgberoGameEngine {
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
 
-    // 1. Volumetric Overhead Streetlight Pools & Anamorphic Lens Flares along Left/Right Barriers
+    // 1. 3D Projected Volumetric Overhead Streetlight Pools along Left/Right Lanes (Crisp, non-hazy intensity)
     const poleSpacing = 240;
-    const offset = this.asphaltGrainOffset;
+    const offset = this.asphaltGrainOffset % poleSpacing;
     const lampColorInner =
       stageMod === 1
-        ? 'rgba(0, 245, 212, 0.22)'
+        ? 'rgba(0, 245, 212, 0.09)'
         : stageMod === 2
-        ? 'rgba(56, 189, 248, 0.20)'
-        : 'rgba(255, 180, 40, 0.22)';
-    const flareColor =
-      stageMod === 1 ? 'rgba(0, 245, 212, 0.45)' : 'rgba(255, 210, 90, 0.45)';
+        ? 'rgba(56, 189, 248, 0.08)'
+        : 'rgba(255, 180, 40, 0.09)';
 
-    for (let y = -600 - poleSpacing + offset; y < LOGICAL_HEIGHT + 600; y += poleSpacing) {
-      // Left Streetlamp Light Pool onto Left Lane
+    for (let y = -450 + offset; y < 820; y += poleSpacing) {
+      const pLeftLamp = this.project3D(ROAD_LEFT + 55, y);
+      const pRightLamp = this.project3D(ROAD_RIGHT - 55, y);
+      const rL = Math.max(20, 125 * pLeftLamp.scale);
+      const rR = Math.max(20, 125 * pRightLamp.scale);
+
       const leftPool = ctx.createRadialGradient(
-        ROAD_LEFT - 15,
-        y + 25,
-        8,
-        ROAD_LEFT + 45,
-        y + 45,
-        175
+        pLeftLamp.x,
+        pLeftLamp.y,
+        4,
+        pLeftLamp.x,
+        pLeftLamp.y,
+        rL
       );
       leftPool.addColorStop(0, lampColorInner);
       leftPool.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = leftPool;
-      ctx.fillRect(ROAD_LEFT - 140, y - 120, 340, 320);
+      ctx.fillRect(pLeftLamp.x - rL, pLeftLamp.y - rL * 0.6, rL * 2, rL * 1.2);
 
-      // Left Anamorphic Horizontal Lens Flare Streak
-      ctx.fillStyle = flareColor;
-      ctx.fillRect(ROAD_LEFT - 85, y + 23, 95, 2.5);
-
-      // Right Streetlamp Light Pool onto Right Lane
       const rightPool = ctx.createRadialGradient(
-        ROAD_RIGHT + 15,
-        y + 65,
-        8,
-        ROAD_RIGHT - 45,
-        y + 85,
-        175
+        pRightLamp.x,
+        pRightLamp.y,
+        4,
+        pRightLamp.x,
+        pRightLamp.y,
+        rR
       );
       rightPool.addColorStop(0, lampColorInner);
       rightPool.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = rightPool;
-      ctx.fillRect(ROAD_RIGHT - 200, y - 80, 340, 320);
-
-      // Right Anamorphic Horizontal Lens Flare Streak
-      ctx.fillStyle = flareColor;
-      ctx.fillRect(ROAD_RIGHT - 10, y + 63, 95, 2.5);
+      ctx.fillRect(pRightLamp.x - rR, pRightLamp.y - rR * 0.6, rR * 2, rR * 1.2);
     }
 
-    // 2. Additive HDR Brake-Light & Turn-Signal Bloom Halos on Traffic Vehicles
+    // 2. Additive 3D HDR Brake-Light & Turn-Signal Bloom Halos on Traffic Vehicles
     for (const obs of this.obstacles) {
       if (obs.type === 'BARRICADE') continue;
-      const hw = obs.width / 2;
-      const hh = obs.height / 2;
+      const pObs = this.project3D(obs.x, obs.y);
+      const s = pObs.scale;
+      const hw = (obs.width / 2) * s;
+      const hh = (obs.height / 2) * s * 0.78;
 
-      for (const lx of [obs.x - hw + 16, obs.x + hw - 16]) {
-        const ly = obs.y + hh - 4;
-        const tailBloom = ctx.createRadialGradient(lx, ly, 2, lx, ly + 8, 44);
-        tailBloom.addColorStop(0, 'rgba(255, 60, 60, 0.52)');
-        tailBloom.addColorStop(0.45, 'rgba(255, 30, 30, 0.18)');
+      for (const lx of [pObs.x - hw + 14 * s, pObs.x + hw - 14 * s]) {
+        const ly = pObs.y - 18 * s + hh - 4 * s;
+        const rad = Math.max(8, 28 * s);
+        const tailBloom = ctx.createRadialGradient(lx, ly, 2, lx, ly + 4 * s, rad);
+        tailBloom.addColorStop(0, 'rgba(255, 60, 60, 0.36)');
+        tailBloom.addColorStop(0.45, 'rgba(255, 30, 30, 0.12)');
         tailBloom.addColorStop(1, 'rgba(255, 0, 0, 0)');
         ctx.fillStyle = tailBloom;
-        ctx.fillRect(lx - 44, ly - 36, 88, 88);
-
-        // Anamorphic horizontal crimson brake flare
-        ctx.fillStyle = 'rgba(255, 90, 90, 0.38)';
-        ctx.fillRect(lx - 26, ly - 1, 52, 2);
+        ctx.fillRect(lx - rad, ly - rad, rad * 2, rad * 2);
       }
     }
 
-    // 3. Player Okada Headlight & Tail-Light HDR Bloom
-    const px = this.player.x;
-    const py = this.player.y;
+    // 3. Player Okada Headlight 3D Bloom (Clean & sharp so the bike stays crystal-clear)
+    const pBike = this.project3D(this.player.x, this.player.y);
     const playerBloom = ctx.createRadialGradient(
-      px,
-      py - 30,
-      10,
-      px,
-      py - 60,
-      isBoosting ? 185 : 135
+      pBike.x,
+      pBike.y - 45,
+      8,
+      pBike.x,
+      pBike.y - 70,
+      isBoosting ? 130 : 95
     );
     playerBloom.addColorStop(
       0,
-      isBoosting ? 'rgba(0, 245, 212, 0.36)' : 'rgba(255, 215, 90, 0.24)'
+      isBoosting ? 'rgba(0, 245, 212, 0.18)' : 'rgba(255, 215, 90, 0.12)'
     );
     playerBloom.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = playerBloom;
-    ctx.fillRect(px - 190, py - 240, 380, 320);
+    ctx.fillRect(pBike.x - 140, pBike.y - 200, 280, 240);
 
-    // 4. Top Horizon Atmospheric Sunset / Neon Haze & Sun-Shaft God-Rays
-    const horizonGrad = ctx.createLinearGradient(
-      0,
-      visibleTop,
-      0,
-      visibleTop + visibleH * 0.34
-    );
+    // 4. Subtle Horizon Atmospheric Glow (Kept tight to horizon so incoming traffic is never blurry or washed out)
+    const horizonY = 218;
+    const horizonGrad = ctx.createLinearGradient(0, horizonY - 45, 0, horizonY + 45);
     if (stageMod === 0) {
-      horizonGrad.addColorStop(0, 'rgba(255, 145, 30, 0.30)');
-      horizonGrad.addColorStop(0.5, 'rgba(255, 90, 20, 0.10)');
+      horizonGrad.addColorStop(0, 'rgba(255, 145, 30, 0)');
+      horizonGrad.addColorStop(0.5, 'rgba(255, 125, 25, 0.11)');
       horizonGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
     } else if (stageMod === 1) {
-      horizonGrad.addColorStop(0, 'rgba(140, 50, 255, 0.28)');
-      horizonGrad.addColorStop(0.5, 'rgba(0, 245, 212, 0.09)');
+      horizonGrad.addColorStop(0, 'rgba(140, 50, 255, 0)');
+      horizonGrad.addColorStop(0.5, 'rgba(0, 245, 212, 0.10)');
       horizonGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
     } else {
-      horizonGrad.addColorStop(0, 'rgba(56, 189, 248, 0.24)');
-      horizonGrad.addColorStop(0.5, 'rgba(30, 64, 175, 0.10)');
+      horizonGrad.addColorStop(0, 'rgba(56, 189, 248, 0)');
+      horizonGrad.addColorStop(0.5, 'rgba(56, 189, 248, 0.10)');
       horizonGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
     }
     ctx.fillStyle = horizonGrad;
-    ctx.fillRect(visibleLeft - 40, visibleTop - 20, visibleW + 80, visibleH * 0.36);
+    ctx.fillRect(visibleLeft - 40, horizonY - 45, visibleW + 80, 90);
 
     ctx.restore();
 
-    // 5. Cinematic Camera Lens Edge Vignette (Darkens outer screen edges so the center highway pops in 3D)
+    // 5. Cinematic Camera Lens Edge Vignette (Darkens outer screen edges so the center 3D highway pops)
     ctx.save();
     const centerX = visibleLeft + visibleW / 2;
     const centerY = visibleTop + visibleH / 2;
@@ -4063,21 +4382,23 @@ export class AgberoGameEngine {
   }
 
   private drawFloatingCallouts(ctx: CanvasRenderingContext2D) {
-    // Only render the most recent 2 callouts so text never piles up on the road
+    // Only render the most recent 2 callouts in 3D space so text never piles up on the road
     const visibleCallouts = this.callouts.slice(-2);
     for (const c of visibleCallouts) {
+      const pCall = this.project3D(c.x, c.y);
       ctx.save();
       ctx.globalAlpha = Math.max(0, Math.min(1, c.life));
       ctx.font = '900 15px "Black Ops One", "Impact", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
+      const cy = Math.max(165, pCall.y - 24);
       ctx.strokeStyle = '#0D0C10';
       ctx.lineWidth = 5;
-      ctx.strokeText(c.text, c.x, c.y);
+      ctx.strokeText(c.text, pCall.x, cy);
 
       ctx.fillStyle = c.color;
-      ctx.fillText(c.text, c.x, c.y);
+      ctx.fillText(c.text, pCall.x, cy);
       ctx.restore();
     }
   }
