@@ -3,17 +3,12 @@ import {
   AgberoGameEngine,
   LOGICAL_WIDTH,
   LOGICAL_HEIGHT,
+  soundFX,
 } from '../gameEngine';
 import { GameHUDData, PlayerSaveData } from '../types';
 import { GarageModal } from './GarageModal';
 import {
-  ChevronLeft,
-  ChevronRight,
   RotateCcw,
-  Navigation,
-  Gauge,
-  AlertTriangle,
-  Zap,
   Film,
   Shield,
   Flame,
@@ -21,6 +16,8 @@ import {
   Megaphone,
   Wrench,
   Trophy,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 
 interface GameCanvasProps {
@@ -35,14 +32,19 @@ const INITIAL_HUD: GameHUDData = {
   stageName: '3RD MAINLAND BRIDGE',
   distanceRemaining: 2500,
   distanceTraveled: 0,
-  cashEarned: 500,
-  walletNaira: 1500,
+  cashEarned: 200,
+  walletNaira: 500,
   highScoreNaira: 0,
   bestDistanceMeters: 0,
   speedKmh: 75,
   nearMissCount: 0,
   comboMultiplier: 1,
   hornCharge: 100,
+  isWheelie: false,
+  slipstreamProgress: 0,
+  bossActive: false,
+  bossTimeRemaining: 0,
+  vipConvoyWarningLane: null,
   hasShield: false,
   shieldTimeRemaining: 0,
   boosterTimeRemaining: 0,
@@ -64,18 +66,41 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   const lastFrameTimeRef = useRef<number | null>(null);
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  const touchStartTimeRef = useRef<number>(0);
   const isActiveRef = useRef(isActive);
 
   const [hud, setHud] = useState<GameHUDData>(INITIAL_HUD);
   const [showFailureModal, setShowFailureModal] = useState(false);
   const [isGarageOpen, setIsGarageOpen] = useState(false);
+  const [isMuted, setIsMuted] = useState(() => soundFX.isMuted);
+  const [showControlsHint, setShowControlsHint] = useState(true);
+
+  const handleToggleMute = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nextMuted = soundFX.toggleMute();
+    setIsMuted(nextMuted);
+  };
 
   useEffect(() => {
     isActiveRef.current = isActive;
     if (isActive && engineRef.current) {
       engineRef.current.reloadSaveData();
+      setShowControlsHint(true);
+      const timer = window.setTimeout(() => setShowControlsHint(false), 3800);
+      return () => window.clearTimeout(timer);
+    } else if (!isActive) {
+      soundFX.stopContinuousAudio();
     }
+    return () => {
+      soundFX.stopContinuousAudio();
+    };
   }, [isActive]);
+
+  useEffect(() => {
+    if (hud.isGameOver || isGarageOpen) {
+      soundFX.stopContinuousAudio();
+    }
+  }, [hud.isGameOver, isGarageOpen]);
 
   const handleHUDUpdate = useCallback((nextHud: GameHUDData) => {
     setHud(nextHud);
@@ -85,14 +110,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     if (hud.isGameOver) {
       const timer = window.setTimeout(() => {
         setShowFailureModal(true);
-      }, 360);
+      }, 340);
       return () => window.clearTimeout(timer);
     } else {
       setShowFailureModal(false);
     }
   }, [hud.isGameOver]);
 
-  // Initialize engine once & keep canvas physical dimensions synced to viewport (mobile portrait & desktop)
+  // Initialize engine once & keep canvas physical dimensions synced to viewport
   useEffect(() => {
     const engine = new AgberoGameEngine(handleHUDUpdate, initialGracePeriodMs);
     engineRef.current = engine;
@@ -126,7 +151,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     };
   }, [handleHUDUpdate, initialGracePeriodMs]);
 
-  // Start / manage the 60fps requestAnimationFrame loop when pre-warmed OR active
+  // Start / manage the 60fps requestAnimationFrame loop
   const shouldRunLoop = isPrewarmed || isActive;
 
   useEffect(() => {
@@ -168,7 +193,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     };
   }, [shouldRunLoop]);
 
-  // Keyboard controls: ArrowLeft / ArrowRight, A / D, plus W / ArrowUp / Space for Agbero Horn Blast
+  // Keyboard controls: ArrowLeft / ArrowRight, A / D, S / ArrowDown for Wheelie, W / ArrowUp / Space for Horn
   useEffect(() => {
     if (!isActive) return;
 
@@ -182,6 +207,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
         e.preventDefault();
         engine.moveLane(1);
+      } else if (
+        (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') &&
+        !engine.isGameOver
+      ) {
+        e.preventDefault();
+        engine.setWheelie(true);
       } else if (
         (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp' || e.key === ' ') &&
         !engine.isGameOver
@@ -198,16 +229,32 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        engine.setWheelie(false);
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
   }, [isActive, showFailureModal, isGarageOpen]);
 
-  // Mobile Touch / Swipe Left-Right & Swipe Up for Horn Blast
+  // Intuitive Mobile UX:
+  // - Swipe Left / Right OR simply Tap Left / Right half of the screen to steer!
+  // - Swipe Up to blast Horn!
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     if (!isActive || hud.isGameOver || isGarageOpen) return;
     const touch = e.touches[0];
     touchStartXRef.current = touch.clientX;
     touchStartYRef.current = touch.clientY;
+    touchStartTimeRef.current = performance.now();
   };
 
   const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
@@ -217,34 +264,37 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     const touch = e.changedTouches[0];
     const deltaX = touch.clientX - touchStartXRef.current;
     const deltaY = touch.clientY - touchStartYRef.current;
+    const elapsed = performance.now() - touchStartTimeRef.current;
 
     const engine = engineRef.current;
     if (!engine) return;
 
-    if (Math.abs(deltaX) > 24 && Math.abs(deltaX) > Math.abs(deltaY)) {
+    if (Math.abs(deltaX) > 22 && Math.abs(deltaX) > Math.abs(deltaY)) {
+      // Horizontal Swipe
       if (deltaX < 0) {
         engine.moveLane(-1);
       } else {
         engine.moveLane(1);
       }
     } else if (deltaY < -35 && Math.abs(deltaY) > Math.abs(deltaX)) {
-      // Swipe UP triggers Agbero Horn Blast!
+      // Swipe UP triggers Agbero Horn Blast
       engine.triggerHornBlast();
+    } else if (Math.abs(deltaX) < 15 && Math.abs(deltaY) < 15 && elapsed < 260) {
+      // Quick Tap on Left or Right side of screen steers cleanly without needing bulky buttons!
+      const screenMid = window.innerWidth / 2;
+      if (touch.clientX < screenMid) {
+        engine.moveLane(-1);
+      } else {
+        engine.moveLane(1);
+      }
     }
 
     touchStartXRef.current = null;
     touchStartYRef.current = null;
   };
 
-  const handleSteerLeft = () => {
-    engineRef.current?.moveLane(-1);
-  };
-
-  const handleSteerRight = () => {
-    engineRef.current?.moveLane(1);
-  };
-
-  const handleHornClick = () => {
+  const handleHornClick = (e: React.MouseEvent | React.TouchEvent) => {
+    e.stopPropagation();
     engineRef.current?.triggerHornBlast();
   };
 
@@ -284,235 +334,229 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         className="w-full h-full block"
       />
 
-      {/* Minimalist High-Contrast Graphic Novel HUD Overlay */}
+      {/* Clean, Single-Line Top HUD Bar */}
       {isActive && (
-        <div className="absolute inset-x-0 top-0 z-10 p-2 sm:p-4 pointer-events-none flex items-start justify-between gap-1.5 sm:gap-2">
-          {/* Left HUD: Current Lagos Bridge Stage & Checkpoint Distance */}
-          <div className="flex flex-col bg-[#0D0C10]/90 border-2 border-[#FFCC00] px-2 py-1 sm:px-3.5 sm:py-2 shadow-[3px_3px_0px_#0D0C10] sm:shadow-[4px_4px_0px_#0D0C10] min-w-0">
-            <div className="flex items-center gap-1 text-[#FFCC00] text-[9px] sm:text-xs font-extrabold uppercase tracking-wider">
-              <Navigation className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 fill-current shrink-0" />
-              <span className="truncate">STAGE {hud.stageIndex}: {hud.stageName}</span>
+        <div className="absolute inset-x-0 top-0 z-10 p-3 sm:p-4 pointer-events-none flex flex-col items-center gap-2">
+          <div className="w-full max-w-2xl flex items-center justify-between bg-[#0D0C10]/85 backdrop-blur-md border border-white/15 rounded-full px-4 py-1.5 sm:px-6 sm:py-2 shadow-lg">
+            {/* Left: Distance & Stage */}
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-[#FFCC00]" />
+              <div className="flex items-baseline gap-1.5">
+                <span className="font-mono font-black text-sm sm:text-lg text-white">
+                  {hud.distanceTraveled.toLocaleString()}m
+                </span>
+                <span className="hidden sm:inline text-[10px] font-mono text-white/50 uppercase">
+                  • STAGE {hud.stageIndex}
+                </span>
+              </div>
             </div>
-            <div className="flex items-baseline gap-1 sm:gap-2 mt-0.5">
-              <span className="font-mono font-extrabold text-sm sm:text-2xl text-white tracking-tight">
-                {hud.distanceRemaining.toLocaleString()}m
-              </span>
-              <span className="hidden sm:inline text-xs font-mono text-white/60">
-                ({hud.distanceTraveled.toLocaleString()}m TOTAL)
-              </span>
-            </div>
-          </div>
 
-          {/* Center HUD: Score / Cash Earned (₦) + Active Power-Up & Combo Pills */}
-          <div className="flex flex-col items-center gap-1 sm:gap-1.5 shrink-0">
-            <div className="flex flex-col items-center bg-[#FFCC00] text-[#0D0C10] border-2 border-[#0D0C10] px-2.5 py-1 sm:px-5 sm:py-2 shadow-[3px_3px_0px_#0D0C10] sm:shadow-[4px_4px_0px_#0D0C10]">
-              <span className="text-[8px] sm:text-[11px] font-black uppercase tracking-widest leading-none">
-                DISPATCH PAYOUT
-              </span>
-              <span className="font-mono font-black text-base sm:text-2xl tracking-tight leading-tight">
+            {/* Center: Live Payout (₦) & Combo Tag */}
+            <div className="flex items-center gap-2">
+              <span className="font-mono font-black text-base sm:text-xl text-[#FFCC00]">
                 ₦{hud.cashEarned.toLocaleString()}
               </span>
-            </div>
-
-            {/* Active Power-Up & Combo Badges */}
-            <div className="flex flex-wrap items-center justify-center gap-1">
               {hud.comboMultiplier > 1 && (
-                <div className="bg-[#FF2E2E] text-white border-2 border-[#0D0C10] px-1.5 py-0.5 text-[9px] sm:text-xs font-mono font-black uppercase shadow-[2px_2px_0px_#0D0C10]">
-                  {hud.comboMultiplier}X COMBO
-                </div>
+                <span className="bg-[#FF2E2E] text-white text-[10px] font-mono font-black px-1.5 py-0.5 rounded">
+                  {hud.comboMultiplier}X
+                </span>
               )}
+            </div>
 
-              {hud.boosterTimeRemaining > 0 && (
-                <div className="flex items-center gap-1 bg-[#00F5D4] text-[#0D0C10] border-2 border-[#0D0C10] px-2 py-0.5 text-[9px] sm:text-xs font-mono font-black uppercase shadow-[2px_2px_0px_#0D0C10] animate-pulse">
-                  <Flame className="w-3 h-3 fill-current" />
-                  <span>NITRO {hud.boosterTimeRemaining.toFixed(1)}s</span>
-                </div>
-              )}
+            {/* Right: Speed & Mute Button */}
+            <div className="flex items-center gap-2.5">
+              <span className="font-mono font-bold text-xs sm:text-sm text-white/80">
+                {hud.speedKmh} <span className="text-[10px] text-white/50">KM/H</span>
+              </span>
 
-              {hud.hasShield && (
-                <div className="flex items-center gap-1 bg-[#38BDF8] text-[#0D0C10] border-2 border-[#0D0C10] px-2 py-0.5 text-[9px] sm:text-xs font-mono font-black uppercase shadow-[2px_2px_0px_#0D0C10]">
-                  <Shield className="w-3 h-3 fill-current" />
-                  <span>SHIELD {hud.shieldTimeRemaining.toFixed(1)}s</span>
-                </div>
-              )}
-
-              {hud.magnetTimeRemaining > 0 && (
-                <div className="flex items-center gap-1 bg-[#A855F7] text-white border-2 border-[#0D0C10] px-2 py-0.5 text-[9px] sm:text-xs font-mono font-black uppercase shadow-[2px_2px_0px_#0D0C10]">
-                  <Magnet className="w-3 h-3" />
-                  <span>MAGNET {hud.magnetTimeRemaining.toFixed(1)}s</span>
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={handleToggleMute}
+                title={isMuted ? 'Unmute Sound' : 'Mute Sound'}
+                className="pointer-events-auto p-1.5 rounded-full bg-white/10 hover:bg-[#FFCC00] text-white hover:text-[#0D0C10] transition-colors cursor-pointer"
+              >
+                {isMuted ? (
+                  <VolumeX className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                ) : (
+                  <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                )}
+              </button>
             </div>
           </div>
 
-          {/* Right HUD: Current Speed */}
-          <div className="flex flex-col items-end bg-[#0D0C10]/90 border-2 border-white/80 px-2 py-1 sm:px-3.5 sm:py-2 shadow-[3px_3px_0px_#0D0C10] sm:shadow-[4px_4px_0px_#0D0C10] shrink-0">
-            <div className="flex items-center gap-1 text-white/80 text-[9px] sm:text-xs font-extrabold uppercase tracking-wider">
-              <Gauge className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 text-[#FF2E2E]" />
-              <span>SPEED</span>
-            </div>
-            <div className="flex items-baseline gap-0.5 sm:gap-1 mt-0.5">
-              <span className="font-mono font-extrabold text-sm sm:text-2xl text-[#FFCC00]">
-                {hud.speedKmh}
-              </span>
-              <span className="text-[9px] sm:text-xs font-mono font-bold text-white/70">
-                KM/H
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Bottom Controls Bar: Left Steer, Center AGBERO HORN BLAST Active Skill, Right Steer */}
-      {isActive && !hud.isGameOver && (
-        <div className="absolute inset-x-0 bottom-2.5 sm:bottom-4 z-10 px-3 sm:px-5 flex items-center justify-between pointer-events-none">
-          <button
-            type="button"
-            aria-label="Steer Left"
-            onClick={handleSteerLeft}
-            className="pointer-events-auto active:scale-95 transition-transform flex items-center justify-center w-12 h-12 sm:w-14 sm:h-14 bg-[#0D0C10]/85 hover:bg-[#FFCC00] text-[#FFCC00] hover:text-[#0D0C10] border-2 border-[#FFCC00] shadow-[3px_3px_0px_#0D0C10] cursor-pointer"
-          >
-            <ChevronLeft className="w-7 h-7 stroke-[3]" />
-          </button>
-
-          {/* Center Active Skill: AGBERO HORN BLAST ("CLEAR ROAD!") */}
-          <div className="flex flex-col items-center gap-1 pointer-events-auto">
-            <button
-              type="button"
-              onClick={handleHornClick}
-              disabled={hud.hornCharge < 100}
-              className={`relative overflow-hidden px-3.5 py-2 sm:px-5 sm:py-2.5 border-2 border-[#0D0C10] font-mono font-black text-xs sm:text-sm uppercase tracking-wider flex items-center gap-1.5 shadow-[4px_4px_0px_#0D0C10] transition-all cursor-pointer ${
-                hud.hornCharge >= 100
-                  ? 'bg-[#FFCC00] hover:bg-[#FFD633] text-[#0D0C10] animate-bounce'
-                  : 'bg-[#0D0C10]/85 text-white/50 cursor-not-allowed'
-              }`}
-            >
-              {/* Background progress fill */}
-              {hud.hornCharge < 100 && (
-                <div
-                  className="absolute inset-y-0 left-0 bg-[#FFCC00]/25 transition-all"
-                  style={{ width: `${hud.hornCharge}%` }}
-                />
-              )}
-              <Megaphone className="w-4 h-4 stroke-[2.5] relative z-10" />
-              <span className="relative z-10">
-                {hud.hornCharge >= 100 ? 'HORN BLAST [SPACE]' : `HORN ${hud.hornCharge}%`}
-              </span>
-            </button>
-
-            <div className="hidden sm:flex items-center gap-1.5 bg-[#0D0C10]/75 px-2.5 py-0.5 border border-white/15 text-[10px] font-mono text-white/70 uppercase">
-              <Zap className="w-3 h-3 text-[#FFCC00]" />
-              <span>[A/D] STEER • [SPACE / W] CLEAR ROAD HORN</span>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            aria-label="Steer Right"
-            onClick={handleSteerRight}
-            className="pointer-events-auto active:scale-95 transition-transform flex items-center justify-center w-12 h-12 sm:w-14 sm:h-14 bg-[#0D0C10]/85 hover:bg-[#FFCC00] text-[#FFCC00] hover:text-[#0D0C10] border-2 border-[#FFCC00] shadow-[3px_3px_0px_#0D0C10] cursor-pointer"
-          >
-            <ChevronRight className="w-7 h-7 stroke-[3]" />
-          </button>
-        </div>
-      )}
-
-      {/* DELIVERY FAILED — CONTRACT LOST Modal */}
-      {showFailureModal && (
-        <div className="absolute inset-0 z-20 bg-[#0D0C10]/85 backdrop-blur-[2px] flex items-center justify-center p-4 animate-fadeIn">
-          <div className="w-full max-w-md bg-[#16141C] border-4 border-[#0D0C10] outline outline-2 outline-[#FF2E2E] p-5 sm:p-6 shadow-[10px_10px_0px_#0D0C10] text-center">
-            {/* Warning / New Record Header Tag */}
-            <div className="flex flex-wrap items-center justify-center gap-2 mb-3">
-              <div className="inline-flex items-center gap-1.5 bg-[#FF2E2E] text-white font-black text-xs uppercase tracking-widest px-3 py-1 border-2 border-[#0D0C10]">
-                <AlertTriangle className="w-4 h-4 stroke-[2.5]" />
-                <span>WRECKED ON {hud.stageName}</span>
+          {/* Contextual Status Pill (Only visible when a Power-Up, Wheelie, or Boss is active) */}
+          <div className="flex items-center justify-center gap-2">
+            {hud.bossActive && (
+              <div className="bg-[#FF2E2E] text-white rounded-full px-3 py-0.5 text-[10px] sm:text-xs font-mono font-black uppercase shadow-md animate-pulse">
+                BOSS DANFO • {hud.bossTimeRemaining.toFixed(0)}s
               </div>
+            )}
 
-              {hud.isNewRecord && (
-                <div className="inline-flex items-center gap-1 bg-[#00F5D4] text-[#0D0C10] font-black text-xs uppercase tracking-widest px-2.5 py-1 border-2 border-[#0D0C10] animate-pulse">
-                  <Trophy className="w-3.5 h-3.5" />
-                  <span>NEW RECORD!</span>
-                </div>
-              )}
-            </div>
+            {hud.boosterTimeRemaining > 0 && (
+              <div className="flex items-center gap-1 bg-[#00F5D4] text-[#0D0C10] rounded-full px-3 py-0.5 text-[10px] sm:text-xs font-mono font-black uppercase shadow-md">
+                <Flame className="w-3 h-3 fill-current" />
+                <span>NITRO {hud.boosterTimeRemaining.toFixed(1)}s</span>
+              </div>
+            )}
+
+            {hud.hasShield && (
+              <div className="flex items-center gap-1 bg-[#38BDF8] text-[#0D0C10] rounded-full px-3 py-0.5 text-[10px] sm:text-xs font-mono font-black uppercase shadow-md">
+                <Shield className="w-3 h-3 fill-current" />
+                <span>SHIELD {hud.shieldTimeRemaining.toFixed(0)}s</span>
+              </div>
+            )}
+
+            {hud.magnetTimeRemaining > 0 && (
+              <div className="flex items-center gap-1 bg-[#A855F7] text-white rounded-full px-3 py-0.5 text-[10px] sm:text-xs font-mono font-black uppercase shadow-md">
+                <Magnet className="w-3 h-3" />
+                <span>MAGNET {hud.magnetTimeRemaining.toFixed(0)}s</span>
+              </div>
+            )}
+
+            {hud.isWheelie && (
+              <div className="bg-[#FFCC00] text-[#0D0C10] rounded-full px-3 py-0.5 text-[10px] sm:text-xs font-mono font-black uppercase shadow-md">
+                WHEELIE 2X
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Brief Auto-Fading Controls Toast at Run Start */}
+      {isActive && showControlsHint && !hud.isGameOver && (
+        <div className="absolute inset-x-0 top-20 z-10 flex justify-center pointer-events-none animate-fadeIn">
+          <div className="bg-[#0D0C10]/75 backdrop-blur-sm text-white/80 text-[11px] font-mono px-3.5 py-1 rounded-full border border-white/10">
+            Tap or Swipe Left/Right to Steer • Hold Wheelie for 2X
+          </div>
+        </div>
+      )}
+
+      {/* Minimalist Bottom Action Pills: Wheelie 2X (Left) & Horn Blast (Right) */}
+      {isActive && !hud.isGameOver && (
+        <div className="absolute inset-x-0 bottom-4 sm:bottom-6 z-10 px-4 sm:px-8 flex items-center justify-between pointer-events-none max-w-2xl mx-auto">
+          {/* Hold for 2X Wheelie Pill */}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              engineRef.current?.setWheelie(true);
+            }}
+            onPointerUp={(e) => {
+              e.stopPropagation();
+              engineRef.current?.setWheelie(false);
+            }}
+            onPointerLeave={() => engineRef.current?.setWheelie(false)}
+            onPointerCancel={() => engineRef.current?.setWheelie(false)}
+            className={`pointer-events-auto px-4 py-2.5 rounded-full font-mono font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg transition-all cursor-pointer border ${
+              hud.isWheelie
+                ? 'bg-[#FFCC00] text-[#0D0C10] border-[#0D0C10] scale-95'
+                : 'bg-[#0D0C10]/80 hover:bg-[#0D0C10] text-white/90 border-white/20 backdrop-blur-md'
+            }`}
+          >
+            <Flame className={`w-3.5 h-3.5 ${hud.isWheelie ? 'fill-current' : 'text-[#FFCC00]'}`} />
+            <span>2X WHEELIE</span>
+          </button>
+
+          {/* Horn Blast Pill */}
+          <button
+            type="button"
+            onClick={handleHornClick}
+            disabled={hud.hornCharge < 100}
+            className={`pointer-events-auto relative overflow-hidden px-4 py-2.5 rounded-full font-mono font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg transition-all cursor-pointer border ${
+              hud.hornCharge >= 100
+                ? 'bg-[#FFCC00] hover:bg-[#FFD633] text-[#0D0C10] border-[#0D0C10]'
+                : 'bg-[#0D0C10]/70 text-white/40 border-white/10 backdrop-blur-md cursor-not-allowed'
+            }`}
+          >
+            {hud.hornCharge < 100 && (
+              <div
+                className="absolute inset-y-0 left-0 bg-[#FFCC00]/20 transition-all"
+                style={{ width: `${hud.hornCharge}%` }}
+              />
+            )}
+            <Megaphone className="w-3.5 h-3.5 relative z-10" />
+            <span className="relative z-10">
+              {hud.hornCharge >= 100 ? 'HORN READY' : `${hud.hornCharge}%`}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {/* Clean, Streamlined Game Over Modal */}
+      {showFailureModal && (
+        <div className="absolute inset-0 z-20 bg-[#0D0C10]/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="w-full max-w-sm bg-[#16141C] border-2 border-white/15 rounded-2xl p-6 shadow-2xl text-center">
+            {hud.isNewRecord ? (
+              <div className="inline-flex items-center gap-1.5 bg-[#00F5D4]/15 text-[#00F5D4] font-mono font-bold text-xs uppercase px-3 py-1 rounded-full mb-2">
+                <Trophy className="w-3.5 h-3.5" />
+                <span>New Personal Best!</span>
+              </div>
+            ) : (
+              <span className="text-[11px] font-mono uppercase tracking-widest text-[#FF2E2E] font-bold">
+                Run Ended • {hud.stageName}
+              </span>
+            )}
 
             <h2
-              className="text-xl sm:text-2xl font-black uppercase tracking-tight text-white leading-tight"
+              className="text-2xl font-black uppercase text-white mt-0.5"
               style={{ fontFamily: '"Black Ops One", "Impact", sans-serif' }}
             >
-              DELIVERY FAILED — CONTRACT LOST
+              DELIVERY FAILED
             </h2>
 
-            <p className="text-xs sm:text-sm text-white/70 mt-1">
-              Your run earnings have been deposited into your Obalende Wallet!
-            </p>
-
-            {/* Score & Stats Grid */}
-            <div className="grid grid-cols-3 gap-2 my-3.5 bg-[#0D0C10] p-3 border-2 border-white/15">
+            {/* Clean 2-Column Run Summary */}
+            <div className="grid grid-cols-2 gap-3 my-5 bg-[#0D0C10] p-4 rounded-xl border border-white/10">
               <div className="flex flex-col">
-                <span className="text-[10px] font-mono uppercase text-white/60">
-                  RUN PAYOUT
+                <span className="text-[10px] font-mono uppercase text-white/50">
+                  EARNED THIS RUN
                 </span>
-                <span className="font-mono font-black text-base sm:text-xl text-[#FFCC00]">
-                  ₦{hud.cashEarned.toLocaleString()}
+                <span className="font-mono font-black text-2xl text-[#FFCC00] mt-0.5">
+                  +₦{hud.cashEarned.toLocaleString()}
                 </span>
               </div>
 
-              <div className="flex flex-col border-x border-white/15 px-2">
-                <span className="text-[10px] font-mono uppercase text-white/60">
+              <div className="flex flex-col border-l border-white/10 pl-3">
+                <span className="text-[10px] font-mono uppercase text-white/50">
                   DISTANCE
                 </span>
-                <span className="font-mono font-black text-base sm:text-xl text-white">
+                <span className="font-mono font-black text-2xl text-white mt-0.5">
                   {hud.distanceTraveled.toLocaleString()}m
                 </span>
               </div>
-
-              <div className="flex flex-col">
-                <span className="text-[10px] font-mono uppercase text-white/60">
-                  TOTAL WALLET
-                </span>
-                <span className="font-mono font-black text-base sm:text-xl text-[#00F5D4]">
-                  ₦{hud.walletNaira.toLocaleString()}
-                </span>
-              </div>
             </div>
 
-            {/* Best Career Stats Bar */}
-            <div className="flex items-center justify-between bg-white/5 px-3 py-1.5 mb-4 text-[11px] font-mono text-white/75 border border-white/10">
-              <span>BEST PAYOUT: ₦{hud.highScoreNaira.toLocaleString()}</span>
-              <span>BEST RUN: {hud.bestDistanceMeters.toLocaleString()}m</span>
-            </div>
-
-            {/* Action Buttons: Retry Run, Okada Garage & Upgrades, Rewatch Intro */}
-            <div className="flex flex-col gap-2">
+            {/* Action Buttons */}
+            <div className="flex flex-col gap-2.5">
               <button
                 type="button"
                 onClick={handleRetryRun}
-                className="w-full py-3 px-6 bg-[#FFCC00] hover:bg-[#FFD633] active:translate-y-0.5 text-[#0D0C10] font-black text-base sm:text-lg uppercase tracking-wider border-3 border-[#0D0C10] shadow-[5px_5px_0px_#0D0C10] flex items-center justify-center gap-2 transition-all cursor-pointer"
+                className="w-full py-3.5 px-6 bg-[#FFCC00] hover:bg-[#FFD633] active:scale-[0.99] text-[#0D0C10] font-black text-base uppercase tracking-wider rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg"
               >
-                <RotateCcw className="w-5 h-5 stroke-[2.75]" />
+                <RotateCcw className="w-5 h-5 stroke-[2.5]" />
                 <span>RETRY RUN</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setIsGarageOpen(true)}
-                className="w-full py-2.5 px-4 bg-[#00F5D4] hover:bg-[#33F7DD] text-[#0D0C10] font-black text-xs sm:text-sm uppercase tracking-wider border-2 border-[#0D0C10] shadow-[4px_4px_0px_#0D0C10] flex items-center justify-center gap-2 transition-all cursor-pointer"
-              >
-                <Wrench className="w-4 h-4 stroke-[2.5]" />
-                <span>OKADA GARAGE & UPGRADES (₦{hud.walletNaira.toLocaleString()})</span>
-              </button>
-
-              {onRewatchIntro && (
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={handleRewatchIntroClick}
-                  className="w-full py-2 px-4 bg-[#0D0C10] hover:bg-white/10 text-white/75 hover:text-white font-mono font-bold text-xs uppercase tracking-widest border border-white/20 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  onClick={() => setIsGarageOpen(true)}
+                  className="py-2.5 px-3 bg-white/10 hover:bg-white/15 text-white font-mono font-bold text-xs uppercase rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                 >
-                  <Film className="w-3.5 h-3.5 text-[#FFCC00]" />
-                  <span>REWATCH INTRO STORY</span>
+                  <Wrench className="w-3.5 h-3.5 text-[#00F5D4]" />
+                  <span>GARAGE (₦{hud.walletNaira.toLocaleString()})</span>
                 </button>
-              )}
+
+                {onRewatchIntro && (
+                  <button
+                    type="button"
+                    onClick={handleRewatchIntroClick}
+                    className="py-2.5 px-3 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white font-mono font-bold text-xs uppercase rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Film className="w-3.5 h-3.5 text-[#FFCC00]" />
+                    <span>INTRO VIDEO</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

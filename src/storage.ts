@@ -1,6 +1,6 @@
 import { BikeSkinId, BikeSkinSpec, PlayerSaveData } from './types';
 
-const STORAGE_KEY = 'agbero_express_save_v1';
+const STORAGE_KEY = 'agbero_express_save_v2';
 
 export const BIKE_SKINS: Record<BikeSkinId, BikeSkinSpec> = {
   RED_BOXER: {
@@ -17,7 +17,7 @@ export const BIKE_SKINS: Record<BikeSkinId, BikeSkinSpec> = {
     id: 'GOLD_AGBERO',
     name: 'CHAIRMAN GOLD EDITION',
     tagline: '24K Danfo-Yellow chrome tank & high-roller trim.',
-    price: 8500,
+    price: 4500,
     primaryColor: '#FFCC00',
     secondaryColor: '#D97706',
     accentColor: '#0D0C10',
@@ -27,7 +27,7 @@ export const BIKE_SKINS: Record<BikeSkinId, BikeSkinSpec> = {
     id: 'CYBER_LAGOS',
     name: 'EKO ATLANTIC NEON 2099',
     tagline: 'Twin-turbo plasma fairing built for 3rd Mainland speed.',
-    price: 18000,
+    price: 9500,
     primaryColor: '#00F5D4',
     secondaryColor: '#7C3AED',
     accentColor: '#FF2E2E',
@@ -35,10 +35,10 @@ export const BIKE_SKINS: Record<BikeSkinId, BikeSkinSpec> = {
   },
 };
 
-export const UPGRADE_COSTS = [0, 3500, 7500, 14000, 24000]; // Level 1 -> 5
+export const UPGRADE_COSTS = [0, 1200, 2500, 4800, 8500]; // Level 1 -> 5
 
 const DEFAULT_SAVE: PlayerSaveData = {
-  walletNaira: 1500,
+  walletNaira: 500,
   highScoreNaira: 0,
   bestDistanceMeters: 0,
   unlockedSkins: ['RED_BOXER'],

@@ -5,7 +5,7 @@ import { GameCanvas } from './components/GameCanvas';
 import { GarageModal } from './components/GarageModal';
 import { loadPlayerSave } from './storage';
 import { soundFX } from './gameEngine';
-import { Flame, Play, ShieldAlert, Bike, Wrench, Trophy } from 'lucide-react';
+import { Play, Wrench, Trophy } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [phase, setPhase] = useState<AppPhase>('START');
@@ -50,94 +50,75 @@ export const App: React.FC = () => {
         onVideoEnd={handleVideoEnd}
       />
 
-      {/* Phase 1: Minimalist, High-Contrast Graphic Novel Start Overlay */}
+      {/* Phase 1: Clean, Uncluttered Start Screen */}
       {phase === 'START' && (
-        <div className="absolute inset-0 z-40 bg-[#0D0C10]/90 backdrop-blur-[3px] flex flex-col items-center justify-between p-4 sm:p-8 text-center">
-          {/* Top Dispatch Bar with Persistent Wallet & Best Record */}
-          <div className="w-full flex flex-wrap items-center justify-between gap-2 border-b-2 border-[#FFCC00]/40 pb-2">
-            <div className="flex items-center gap-2 text-[#FFCC00] font-mono text-[10px] sm:text-xs font-bold tracking-widest uppercase">
-              <Bike className="w-4 h-4 text-[#FF2E2E]" />
-              <span>LAGOS MAINLAND // EXPRESS DISPATCH</span>
-            </div>
+        <div className="absolute inset-0 z-40 bg-[#0D0C10]/90 backdrop-blur-sm flex flex-col items-center justify-between p-5 sm:p-8 text-center">
+          {/* Top Minimalist Bar: Wallet & Best Run */}
+          <div className="w-full max-w-2xl flex items-center justify-between">
+            <span className="text-xs font-mono font-bold tracking-widest uppercase text-white/60">
+              AGBERO EXPRESS
+            </span>
 
             <div className="flex items-center gap-2">
-              {saveData.highScoreNaira > 0 && (
-                <div className="hidden sm:flex items-center gap-1 bg-white/10 text-white px-2.5 py-0.5 font-mono text-xs border border-white/20">
+              {saveData.bestDistanceMeters > 0 && (
+                <div className="flex items-center gap-1 bg-white/5 text-white/80 px-3 py-1 rounded-full font-mono text-xs border border-white/10">
                   <Trophy className="w-3.5 h-3.5 text-[#FFCC00]" />
-                  <span>BEST: ₦{saveData.highScoreNaira.toLocaleString()}</span>
+                  <span>{saveData.bestDistanceMeters.toLocaleString()}m</span>
                 </div>
               )}
-              <div className="flex items-center gap-1.5 bg-[#FFCC00] text-[#0D0C10] px-2.5 py-0.5 font-mono font-black text-[10px] sm:text-xs uppercase">
-                <span>WALLET: ₦{saveData.walletNaira.toLocaleString()}</span>
+              <div className="bg-[#FFCC00]/15 text-[#FFCC00] border border-[#FFCC00]/30 px-3 py-1 rounded-full font-mono font-bold text-xs">
+                ₦{saveData.walletNaira.toLocaleString()}
               </div>
             </div>
           </div>
 
-          {/* Center Title & Bold CTAs */}
-          <div className="my-auto flex flex-col items-center max-w-2xl px-2">
-            <div className="inline-flex items-center gap-1.5 bg-[#FF2E2E] text-white border-2 border-[#0D0C10] px-3 py-0.5 text-[10px] sm:text-xs font-black uppercase tracking-widest mb-2 sm:mb-3 shadow-[3px_3px_0px_#0D0C10]">
-              <Flame className="w-3.5 h-3.5 fill-current" />
-              <span>HIGH-STAKES COURIER RUN</span>
-            </div>
-
+          {/* Center Title & Clean Action Buttons */}
+          <div className="my-auto flex flex-col items-center max-w-lg px-2">
             <h1
-              className="text-3xl sm:text-5xl md:text-6xl font-black uppercase tracking-tight text-white leading-none drop-shadow-[4px_4px_0px_#0D0C10]"
+              className="text-4xl sm:text-6xl font-black uppercase tracking-tight text-white leading-none"
               style={{ fontFamily: '"Black Ops One", "Impact", sans-serif' }}
             >
-              AGBERO EXPRESS:{' '}
-              <span className="text-[#FFCC00] underline decoration-[#FF2E2E] decoration-4 underline-offset-4">
-                RUSH HOUR
-              </span>
+              AGBERO{' '}
+              <span className="text-[#FFCC00]">EXPRESS</span>
             </h1>
+            <span className="mt-1.5 text-xs sm:text-sm font-mono uppercase tracking-[0.25em] text-[#FF2E2E] font-bold">
+              LAGOS RUSH HOUR
+            </span>
 
-            <p className="mt-2 sm:mt-3 text-xs sm:text-sm md:text-base text-white/80 font-medium max-w-lg">
-              Thread your Okada through lane-cutting Danfo buses, Keke Napep tricycles,
-              potholes, and LASG roadblocks across 3rd Mainland, Eko Bridge, and Lekki!
+            <p className="mt-4 text-xs sm:text-sm text-white/70 max-w-sm leading-relaxed">
+              Weave through Lagos traffic, dodge Danfo buses, and deliver on time across 3rd Mainland Bridge.
             </p>
 
-            {/* Primary & Garage CTAs */}
-            <div className="mt-4 sm:mt-7 flex flex-col sm:flex-row items-center gap-3">
+            {/* Primary & Secondary CTAs */}
+            <div className="mt-7 w-full max-w-xs flex flex-col gap-3">
               <button
                 type="button"
                 onClick={handleStartDelivery}
-                className="group relative inline-flex items-center justify-center gap-3 px-7 py-3 sm:px-10 sm:py-4 bg-[#FFCC00] hover:bg-[#FFD633] active:translate-y-0.5 text-[#0D0C10] font-black text-base sm:text-xl uppercase tracking-wider border-4 border-[#0D0C10] shadow-[6px_6px_0px_#FF2E2E] hover:shadow-[8px_8px_0px_#FF2E2E] transition-all cursor-pointer"
+                className="w-full py-4 px-8 bg-[#FFCC00] hover:bg-[#FFD633] active:scale-[0.99] text-[#0D0C10] font-black text-base sm:text-lg uppercase tracking-wider rounded-xl shadow-lg flex items-center justify-center gap-2.5 transition-all cursor-pointer"
               >
-                <Play className="w-5 h-5 sm:w-6 sm:h-6 fill-current" />
+                <Play className="w-5 h-5 fill-current" />
                 <span>START DELIVERY</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setIsGarageOpen(true)}
-                className="inline-flex items-center justify-center gap-2 px-5 py-3 sm:py-4 bg-[#00F5D4] hover:bg-[#33F7DD] active:translate-y-0.5 text-[#0D0C10] font-black text-sm sm:text-base uppercase tracking-wider border-4 border-[#0D0C10] shadow-[5px_5px_0px_#0D0C10] transition-all cursor-pointer"
+                className="w-full py-3 px-6 bg-white/10 hover:bg-white/15 active:scale-[0.99] text-white font-mono font-bold text-xs sm:text-sm uppercase tracking-wider rounded-xl border border-white/10 flex items-center justify-center gap-2 transition-all cursor-pointer"
               >
-                <Wrench className="w-5 h-5 stroke-[2.5]" />
+                <Wrench className="w-4 h-4 text-[#00F5D4]" />
                 <span>GARAGE & UPGRADES</span>
               </button>
             </div>
           </div>
 
-          {/* Bottom Controls Legend */}
-          <div className="w-full flex flex-wrap items-center justify-center sm:justify-between gap-2 border-t-2 border-white/15 pt-2 text-[10px] sm:text-xs font-mono text-white/70">
-            <div className="flex items-center gap-2">
-              <span className="bg-white/10 text-[#FFCC00] px-2 py-0.5 font-bold border border-white/20">
-                A / D / SWIPE
-              </span>
-              <span>STEER</span>
-              <span className="bg-white/10 text-[#00F5D4] px-2 py-0.5 font-bold border border-white/20">
-                SPACE / SWIPE UP
-              </span>
-              <span>HORN BLAST</span>
-            </div>
-            <div className="hidden sm:flex items-center gap-1.5 text-[#FFCC00]">
-              <ShieldAlert className="w-3.5 h-3.5" />
-              <span>WATCH FOR DANFO TURN-SIGNAL BLINKERS!</span>
-            </div>
+          {/* Simple 1-Line Controls Footer */}
+          <div className="text-[11px] font-mono text-white/50">
+            Tap or Swipe Left / Right to Steer • Space or Swipe Up for Horn
           </div>
         </div>
       )}
 
-      {/* Okada Garage & Upgrades Modal on Start Screen */}
+      {/* Okada Garage & Upgrades Modal */}
       <GarageModal
         isOpen={isGarageOpen}
         onClose={() => setIsGarageOpen(false)}

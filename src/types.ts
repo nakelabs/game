@@ -90,6 +90,35 @@ export interface LandmarkGate {
   y: number;
 }
 
+export interface VipConvoyState {
+  active: boolean;
+  lane: LaneIndex;
+  warningTimer: number; // 2.0s flashing rear siren warning before SUV rockets up
+  y: number; // Starts at LOGICAL_HEIGHT + 240 and rockets upward to -350
+  sirenPhase: number;
+}
+
+export interface BossDanfoState {
+  active: boolean;
+  lane: LaneIndex;
+  targetLane: LaneIndex;
+  x: number;
+  y: number;
+  timeRemaining: number; // 15s survival encounter
+  throwTimer: number;
+  moveTimer: number;
+  tauntText: string;
+}
+
+export interface SpeechBubble {
+  id: number;
+  text: string;
+  x: number;
+  y: number;
+  life: number;
+  isBoss?: boolean;
+}
+
 export interface SpeedLine {
   x: number;
   y: number;
@@ -135,6 +164,10 @@ export interface PlayerState {
   tiltAngle: number; // radians
   bobPhase: number;
   wobbleTimer: number; // Pothole steering wobble effect
+  isWheelie: boolean; // High-risk / high-reward 2X cash & pothole-hop stunt
+  wheelieTime: number;
+  slipstreamProgress: number; // 0 to 100 tailgating draft meter
+  slipstreamBoostTimer: number;
 }
 
 export interface GameHUDData {
@@ -150,6 +183,11 @@ export interface GameHUDData {
   nearMissCount: number;
   comboMultiplier: number;
   hornCharge: number; // 0 to 100
+  isWheelie: boolean;
+  slipstreamProgress: number; // 0 to 100
+  bossActive: boolean;
+  bossTimeRemaining: number;
+  vipConvoyWarningLane: LaneIndex | null;
   hasShield: boolean;
   shieldTimeRemaining: number; // seconds
   boosterTimeRemaining: number; // seconds

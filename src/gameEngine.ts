@@ -6,6 +6,9 @@ import {
   CollectibleItem,
   RoadHazard,
   LandmarkGate,
+  VipConvoyState,
+  BossDanfoState,
+  SpeechBubble,
   LaneIndex,
   PlayerState,
   SpeedLine,
@@ -47,31 +50,58 @@ const DANFO_SLOGANS = [
 
 const KEKE_SLOGANS = ['EXPRESS', 'SHARP GUY', 'ONE CHANCE', 'NO WAHALA'];
 
+const PIDGIN_SLANGS = [
+  'E CHOKE!',
+  'NO GREE FOR ANYBODY!',
+  'OSHEY CHAIRMAN!',
+  'OWA O! ENTER WITH CHANGE!',
+  'WETIN DEY TRANSPORTER!',
+  'CLEAR ROAD FOR OKADA!',
+  'SHARP DISPATCH!',
+  'LAGOS NO DEY CARRY LAST!',
+];
+
+const BOSS_TAUNTS = [
+  'I BE AGBERO CHAIRMAN! COMOT!',
+  'TAKE CRATE! NO PASS ME!',
+  '3RD MAINLAND NA MY OFFICE!',
+  'YOU THINK SAY YOUR OKADA FAST?!',
+];
+
 const STAGES = [
   {
     index: 1,
     name: '3RD MAINLAND BRIDGE',
     checkpointTitle: 'EKO BRIDGE TOLL GATE',
-    checkpointSub: 'STAGE 1 CLEARED! +₦3,500 CONTRACT BONUS',
+    checkpointSub: 'STAGE 1 CLEARED! +₦750 CONTRACT BONUS',
   },
   {
     index: 2,
     name: 'EKO BRIDGE NEON DUSK',
     checkpointTitle: 'VICTORIA ISLAND // LEKKI LINK',
-    checkpointSub: 'STAGE 2 CLEARED! +₦5,000 CONTRACT BONUS',
+    checkpointSub: 'STAGE 2 CLEARED! +₦1,200 CONTRACT BONUS',
   },
   {
     index: 3,
     name: 'LEKKI-IKOYI MONSOON RUSH',
     checkpointTitle: 'EKO ATLANTIC VIP TERMINAL',
-    checkpointSub: 'STAGE 3 CLEARED! +₦7,500 VIP BONUS',
+    checkpointSub: 'STAGE 3 CLEARED! +₦2,000 VIP BONUS',
   },
 ];
 
-// Synthesized Web Audio sound effects (zero external file dependencies, unlocked on user interaction)
+// Synthesized Web Audio sound effects + Continuous Engine Audio & Procedural Afrobeats Synth Groove
 class SoundFX {
   private ctx: AudioContext | null = null;
   public isMuted = false;
+
+  // Continuous 2-Stroke Okada Engine Oscillator Nodes
+  private engineOsc: OscillatorNode | null = null;
+  private engineGain: GainNode | null = null;
+  private isEngineRunning = false;
+
+  // Procedural Lagos Afrobeats / Percussion Synth Sequencer
+  private beatAccum = 0;
+  private beatStep = 0;
 
   private getContext(): AudioContext | null {
     if (this.isMuted || typeof window === 'undefined') return null;
@@ -87,6 +117,171 @@ class SoundFX {
       this.ctx.resume().catch(() => {});
     }
     return this.ctx;
+  }
+
+  public toggleMute(): boolean {
+    this.isMuted = !this.isMuted;
+    if (this.isMuted) {
+      this.stopContinuousAudio();
+    }
+    return this.isMuted;
+  }
+
+  public startContinuousAudio() {
+    if (this.isMuted || this.isEngineRunning) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    try {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(58, ctx.currentTime);
+
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(240, ctx.currentTime);
+
+      gain.gain.setValueAtTime(0.028, ctx.currentTime);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+
+      this.engineOsc = osc;
+      this.engineGain = gain;
+      this.isEngineRunning = true;
+    } catch {
+      // Ignore
+    }
+  }
+
+  public stopContinuousAudio() {
+    if (this.engineOsc) {
+      try {
+        this.engineOsc.stop();
+        this.engineOsc.disconnect();
+      } catch {
+        // Ignore
+      }
+      this.engineOsc = null;
+    }
+    this.engineGain = null;
+    this.isEngineRunning = false;
+  }
+
+  /**
+   * Updates continuous Okada engine RPM pitch & drives the 122 BPM Lagos Afrobeats Percussion Synth Groove
+   */
+  public updateEngineAndGroove(
+    dt: number,
+    speedKmh: number,
+    isBoosting: boolean,
+    isWheelie: boolean
+  ) {
+    if (this.isMuted) return;
+    if (!this.isEngineRunning) {
+      this.startContinuousAudio();
+    }
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    // 1. Modulate 2-Stroke Okada Engine Pitch (with simulated 4-speed gearbox shifts)
+    if (this.engineOsc && this.engineGain) {
+      const gearMod = ((speedKmh - 70) % 28) / 28;
+      const baseHz = 52 + (speedKmh - 70) * 0.48 + gearMod * 18;
+      const targetHz = baseHz * (isBoosting ? 1.38 : 1) * (isWheelie ? 1.15 : 1);
+      this.engineOsc.frequency.setTargetAtTime(targetHz, ctx.currentTime, 0.06);
+      this.engineGain.gain.setTargetAtTime(
+        isBoosting ? 0.042 : 0.026,
+        ctx.currentTime,
+        0.08
+      );
+    }
+
+    // 2. Procedural 122 BPM Afrobeats / Lagos Clavé Percussion Sequencer (16th note = ~0.122s)
+    const stepInterval = isBoosting ? 0.105 : 0.122;
+    this.beatAccum += dt;
+    if (this.beatAccum >= stepInterval) {
+      this.beatAccum -= stepInterval;
+      this.triggerAfrobeatStep(ctx, this.beatStep % 16, speedKmh > 125 || isBoosting);
+      this.beatStep = (this.beatStep + 1) % 16;
+    }
+  }
+
+  private triggerAfrobeatStep(ctx: AudioContext, step: number, highIntensity: boolean) {
+    try {
+      const now = ctx.currentTime;
+      // Four-on-the-floor syncopated Lagos Kick (steps 0, 3, 6, 8, 12)
+      if (step === 0 || step === 3 || step === 8 || step === 12) {
+        const kick = ctx.createOscillator();
+        const kGain = ctx.createGain();
+        kick.type = 'sine';
+        kick.frequency.setValueAtTime(115, now);
+        kick.frequency.exponentialRampToValueAtTime(36, now + 0.09);
+        kGain.gain.setValueAtTime(0.065, now);
+        kGain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+        kick.connect(kGain);
+        kGain.connect(ctx.destination);
+        kick.start(now);
+        kick.stop(now + 0.09);
+      }
+
+      // Afrobeats Woodblock / Rim Clavé Pattern (steps 2, 5, 9, 12, 14)
+      if (step === 2 || step === 5 || step === 9 || step === 14) {
+        const rim = ctx.createOscillator();
+        const rGain = ctx.createGain();
+        rim.type = 'triangle';
+        rim.frequency.setValueAtTime(step === 9 ? 920 : 740, now);
+        rGain.gain.setValueAtTime(0.025, now);
+        rGain.gain.exponentialRampToValueAtTime(0.001, now + 0.035);
+        rim.connect(rGain);
+        rGain.connect(ctx.destination);
+        rim.start(now);
+        rim.stop(now + 0.035);
+      }
+
+      // Syncopated Log-Drum / Sub Bass Pluck during Rush Hour
+      if (highIntensity && (step === 0 || step === 6 || step === 10 || step === 14)) {
+        const bassNotes = [110, 130.81, 146.83, 164.81];
+        const freq = bassNotes[(step / 2) % bassNotes.length];
+        const bass = ctx.createOscillator();
+        const bGain = ctx.createGain();
+        bass.type = 'triangle';
+        bass.frequency.setValueAtTime(freq, now);
+        bGain.gain.setValueAtTime(0.038, now);
+        bGain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+        bass.connect(bGain);
+        bGain.connect(ctx.destination);
+        bass.start(now);
+        bass.stop(now + 0.1);
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  playSirenWail() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(580, ctx.currentTime);
+      osc.frequency.linearRampToValueAtTime(960, ctx.currentTime + 0.18);
+      osc.frequency.linearRampToValueAtTime(580, ctx.currentTime + 0.36);
+
+      gain.gain.setValueAtTime(0.09, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.36);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.36);
+    } catch {
+      // Ignore
+    }
   }
 
   playSwerve() {
@@ -332,11 +527,40 @@ export class AgberoGameEngine {
   public speedLines: SpeedLine[] = [];
   public rainDrops: RainDrop[] = [];
   public callouts: FloatingCallout[] = [];
+  public speechBubbles: SpeechBubble[] = [];
   public exhaustParticles: ExhaustParticle[] = [];
+  public skidMarks: Array<{ x1: number; y1: number; x2: number; y2: number; alpha: number }> = [];
+  public bikeGhostTrail: Array<{ x: number; y: number; tilt: number; alpha: number }> = [];
+  public cameraZoom = 1.0; // Smoothly zooms out slightly during Nitro / 145+ km/h
+
+  // 1. Authentic Lagos Boss Encounters & Emergency Events
+  public vipConvoy: VipConvoyState = {
+    active: false,
+    lane: 1,
+    warningTimer: 0,
+    y: LOGICAL_HEIGHT + 240,
+    sirenPhase: 0,
+  };
+  public bossDanfo: BossDanfoState = {
+    active: false,
+    lane: 1,
+    targetLane: 1,
+    x: LANE_CENTERS[1],
+    y: -250,
+    timeRemaining: 0,
+    throwTimer: 0,
+    moveTimer: 0,
+    tauntText: BOSS_TAUNTS[0],
+  };
+  private nextVipConvoyMilestone = 950; // Triggers every ~1,100m
+  private nextBossMilestone = 1800; // Triggers before stage checkpoints
+  private nextSpeechId = 1;
+  private pidginBubbleCooldown = 4.5;
 
   public roadScrollOffset = 0;
   public barrierScrollOffset = 0;
   public asphaltGrainOffset = 0;
+  public sceneryScrollOffset = 0;
 
   // Gameplay progression & Multi-Stage Lagos Route
   public baseScrollSpeed = 480; // Accessible starting speed (pixels per second)
@@ -361,7 +585,7 @@ export class AgberoGameEngine {
 
   // HUD metrics
   public distanceTraveled = 0;
-  public cashEarned = 500; // Initial dispatch base pay ₦500
+  public cashEarned = 200; // Realistic Lagos dispatch base flag-fall fare ₦200
   public nearMissCount = 0;
   public isNewRecord = false;
 
@@ -426,6 +650,10 @@ export class AgberoGameEngine {
       tiltAngle: 0,
       bobPhase: 0,
       wobbleTimer: 0,
+      isWheelie: false,
+      wheelieTime: 0,
+      slipstreamProgress: 0,
+      slipstreamBoostTimer: 0,
     };
   }
 
@@ -492,10 +720,36 @@ export class AgberoGameEngine {
     this.hazards = [];
     this.landmarks = [];
     this.callouts = [];
+    this.speechBubbles = [];
     this.exhaustParticles = [];
+    this.skidMarks = [];
+    this.bikeGhostTrail = [];
+    this.cameraZoom = 1.0;
+    this.vipConvoy = {
+      active: false,
+      lane: 1,
+      warningTimer: 0,
+      y: LOGICAL_HEIGHT + 240,
+      sirenPhase: 0,
+    };
+    this.bossDanfo = {
+      active: false,
+      lane: 1,
+      targetLane: 1,
+      x: LANE_CENTERS[1],
+      y: -250,
+      timeRemaining: 0,
+      throwTimer: 0,
+      moveTimer: 0,
+      tauntText: BOSS_TAUNTS[0],
+    };
+    this.nextVipConvoyMilestone = 950;
+    this.nextBossMilestone = 1800;
+    this.pidginBubbleCooldown = 4.5;
     this.roadScrollOffset = 0;
     this.barrierScrollOffset = 0;
     this.asphaltGrainOffset = 0;
+    this.sceneryScrollOffset = 0;
     this.currentScrollSpeed = this.baseScrollSpeed;
     this.elapsedTime = 0;
 
@@ -516,7 +770,7 @@ export class AgberoGameEngine {
     this.comboMultiplier = 1;
     this.comboResetTimer = 0;
     this.distanceTraveled = 0;
-    this.cashEarned = 500;
+    this.cashEarned = 200;
     this.nearMissCount = 0;
     this.isNewRecord = false;
     this.difficultyLevel = 1;
@@ -541,10 +795,61 @@ export class AgberoGameEngine {
     if (this.isGameOver) return;
     const nextLane = Math.max(0, Math.min(2, this.player.currentLane + direction)) as LaneIndex;
     if (nextLane !== this.player.currentLane) {
+      // If Slipstream Draft Meter was full (100%) when swerving out from behind a bus, trigger SLIPSTREAM SLINGSHOT!
+      if (this.player.slipstreamProgress >= 85) {
+        this.player.slipstreamProgress = 0;
+        this.player.slipstreamBoostTimer = 1.65;
+        const slingBonus = 60 + (this.comboMultiplier - 1) * 15;
+        this.cashEarned += slingBonus;
+        soundFX.playPowerUp('BOOSTER');
+        this.callouts.push({
+          id: this.nextCalloutId++,
+          text: `SLIPSTREAM SLINGSHOT! +₦${slingBonus}`,
+          x: this.player.x,
+          y: this.player.y - 82,
+          color: '#00F5D4',
+          life: 1.15,
+        });
+      }
       this.player.currentLane = nextLane;
       this.player.targetX = LANE_CENTERS[nextLane];
       soundFX.playSwerve();
     }
+  }
+
+  /**
+   * 2. High-Risk / High-Reward Stunt: One-Wheelie Overdrive
+   * Holding S / ArrowDown or the WHEELIE button pops the Okada onto its rear wheel:
+   * - Doubles all cash & near-miss rewards (2X)
+   * - Hops cleanly over Lagos potholes without wobbling
+   * - Slightly reduces horizontal steering lerp speed for high-risk skill expression!
+   */
+  public setWheelie(active: boolean) {
+    if (this.isGameOver) {
+      this.player.isWheelie = false;
+      return;
+    }
+    if (active && !this.player.isWheelie) {
+      this.player.isWheelie = true;
+      this.spawnSpeechBubble('ONE-WHEELIE STUNT! 2X PAY!', this.player.x, this.player.y - 75);
+    } else if (!active && this.player.isWheelie) {
+      this.player.isWheelie = false;
+    }
+  }
+
+  public spawnSpeechBubble(text: string, x: number, y: number, isBoss = false) {
+    // Replace any existing non-boss bubble so the canvas never gets cluttered with overlapping text
+    if (!isBoss) {
+      this.speechBubbles = this.speechBubbles.filter((b) => b.isBoss);
+    }
+    this.speechBubbles.push({
+      id: this.nextSpeechId++,
+      text,
+      x,
+      y,
+      life: 1.25,
+      isBoss,
+    });
   }
 
   /**
@@ -570,7 +875,7 @@ export class AgberoGameEngine {
           clearedAny = true;
           if (obs.type === 'BARRICADE') {
             // Blast barricade apart
-            this.smashObstacle(i, obs.x, obs.y, 'HORN BLAST CLEARED ROAD! +₦200', '#FFCC00', 200);
+            this.smashObstacle(i, obs.x, obs.y, 'HORN BLAST CLEARED ROAD! +₦40', '#FFCC00', 40);
           } else {
             // Force Danfo or Keke to swerve frantically out of the player's lane!
             const altLanes = ([0, 1, 2] as LaneIndex[]).filter((l) => l !== obs.lane);
@@ -579,7 +884,7 @@ export class AgberoGameEngine {
             obs.lane = targetLane;
             obs.isSwitchingLane = true;
             obs.blinkerTimer = 0;
-            this.cashEarned += 200;
+            this.cashEarned += 40;
           }
         }
       }
@@ -587,7 +892,7 @@ export class AgberoGameEngine {
 
     this.callouts.push({
       id: this.nextCalloutId++,
-      text: clearedAny ? 'AGBERO HORN! CLEAR ROAD! +₦200' : 'COMOT BODY! CLEAR ROAD!',
+      text: clearedAny ? 'AGBERO HORN! CLEAR ROAD! +₦40' : 'COMOT BODY! CLEAR ROAD!',
       x: this.player.x,
       y: this.player.y - 80,
       color: '#FFCC00',
@@ -611,7 +916,12 @@ export class AgberoGameEngine {
     }
 
     if (this.isGameOver) {
+      soundFX.stopContinuousAudio();
       return;
+    }
+
+    if (!isActive) {
+      soundFX.stopContinuousAudio();
     }
 
     // Power-up & Horn timers
@@ -637,14 +947,39 @@ export class AgberoGameEngine {
       if (this.player.wobbleTimer > 0) {
         this.player.wobbleTimer = Math.max(0, this.player.wobbleTimer - safeDt);
       }
+      if (this.player.slipstreamBoostTimer > 0) {
+        this.player.slipstreamBoostTimer = Math.max(
+          0,
+          this.player.slipstreamBoostTimer - safeDt
+        );
+      }
+      if (this.player.isWheelie) {
+        this.player.wheelieTime += safeDt;
+      } else {
+        this.player.wheelieTime = 0;
+      }
       // Passive horn charge (fills in ~12 seconds, plus +25% per near-miss)
       if (this.hornCharge < 100) {
         this.hornCharge = Math.min(100, this.hornCharge + safeDt * 8.5);
       }
+      // Ambient Lagos Pidgin Slang Speech Bubbles (spaced out so canvas stays clean)
+      this.pidginBubbleCooldown -= safeDt;
+      if (this.pidginBubbleCooldown <= 0) {
+        this.pidginBubbleCooldown = 11.0 + Math.random() * 6.0;
+        const slang = PIDGIN_SLANGS[Math.floor(Math.random() * PIDGIN_SLANGS.length)];
+        this.spawnSpeechBubble(slang, this.player.x, this.player.y - 78);
+      }
     }
 
-    const isBoosting = this.boosterTimeRemaining > 0;
-    const boostMultiplier = isBoosting ? 1.65 : 1.0;
+    const isBoosting =
+      this.boosterTimeRemaining > 0 || this.player.slipstreamBoostTimer > 0;
+    const boostMultiplier =
+      this.boosterTimeRemaining > 0
+        ? 1.65
+        : this.player.slipstreamBoostTimer > 0
+        ? 1.35
+        : 1.0;
+    const wheelieMultiplier = this.player.isWheelie ? 2.0 : 1.0;
 
     // Progressive Difficulty Scaling over Time & Distance
     const activeRunTime = isActive ? Math.max(0, this.elapsedTime - this.gracePeriodSeconds) : 0;
@@ -685,11 +1020,54 @@ export class AgberoGameEngine {
     this.roadScrollOffset = (this.roadScrollOffset + frameScroll) % 120;
     this.barrierScrollOffset = (this.barrierScrollOffset + frameScroll) % 96;
     this.asphaltGrainOffset = (this.asphaltGrainOffset + frameScroll) % 240;
+    this.sceneryScrollOffset = (this.sceneryScrollOffset + frameScroll) % 720;
+
+    // Smooth Dynamic Camera FOV Zoom: widens FOV slightly when Boosting or at Peak Rush Hour
+    const targetZoom = isBoosting ? 0.935 : 1.0 - difficultyProgress * 0.03;
+    this.cameraZoom += (targetZoom - this.cameraZoom) * Math.min(1, 5.5 * safeDt);
 
     if (isActive) {
       const metersDelta = frameScroll * 0.055;
       this.distanceTraveled += metersDelta;
-      this.cashEarned += metersDelta * (isBoosting ? 8.5 : 4.5) * this.comboMultiplier;
+      // Realistic Lagos courier meter rate (~₦0.35 per meter, 1.5x when boosting, 2x during wheelie)
+      this.cashEarned +=
+        metersDelta *
+        (isBoosting ? 0.55 : 0.35) *
+        wheelieMultiplier;
+
+      // Update continuous 2-stroke Okada engine RPM pitch & 122 BPM Afrobeats percussion groove
+      const liveSpeedKmh = Math.round(
+        75 +
+          ((this.currentScrollSpeed - this.baseScrollSpeed) /
+            (this.maxScrollSpeed - this.baseScrollSpeed)) *
+            85
+      );
+      soundFX.updateEngineAndGroove(
+        safeDt,
+        liveSpeedKmh,
+        isBoosting,
+        this.player.isWheelie
+      );
+
+      // Check VIP Siren Convoy Milestone (~every 1,050m)
+      if (
+        !this.vipConvoy.active &&
+        !this.bossDanfo.active &&
+        this.distanceTraveled >= this.nextVipConvoyMilestone
+      ) {
+        this.nextVipConvoyMilestone += 1050 + Math.random() * 350;
+        this.startVipConvoyEvent();
+      }
+
+      // Check Agbero Chairman King Danfo Boss Encounter (~every 1,800m)
+      if (
+        !this.bossDanfo.active &&
+        !this.vipConvoy.active &&
+        this.distanceTraveled >= this.nextBossMilestone
+      ) {
+        this.nextBossMilestone += 2500;
+        this.startBossDanfoEncounter();
+      }
 
       // Check Stage Checkpoint Milestone (every 2,500m)
       if (this.distanceTraveled >= this.nextStageMilestone) {
@@ -697,15 +1075,71 @@ export class AgberoGameEngine {
       }
     }
 
-    // Horizontal Lerp, Pothole Wobble & Bike Tilt Physics
+    // Horizontal Lerp, Pothole Wobble, Skid Marks, Footpeg Sparks & Bike Tilt Physics
+    // (When popping a Wheelie, steering is slightly heavier for high-risk/high-reward control!)
+    const prevX = this.player.x;
     const dx = this.player.targetX - this.player.x;
-    const lerpSpeed = isBoosting ? 20 : 16.5;
+    const lerpSpeed = isBoosting ? 20 : this.player.isWheelie ? 11.5 : 16.5;
     this.player.x += dx * Math.min(1, lerpSpeed * safeDt);
     const wobbleAngle =
       this.player.wobbleTimer > 0 ? Math.sin(this.elapsedTime * 38) * 0.22 : 0;
     this.player.tiltAngle =
       Math.max(-0.36, Math.min(0.36, (dx / LANE_WIDTH) * 0.44)) + wobbleAngle;
     this.player.bobPhase += safeDt * (16 + difficultyProgress * 10 + (isBoosting ? 12 : 0));
+
+    // Record tire skid marks & emit orange footpeg lean sparks during sharp high-speed lane swerves
+    if (Math.abs(dx) > 18) {
+      this.skidMarks.push({
+        x1: prevX,
+        y1: this.player.y + 32 - frameScroll * 0.5,
+        x2: this.player.x,
+        y2: this.player.y + 32,
+        alpha: 0.48,
+      });
+
+      if (Math.abs(this.player.tiltAngle) > 0.16 && Math.random() < 0.75) {
+        const sparkSide = this.player.tiltAngle > 0 ? 20 : -20;
+        this.exhaustParticles.push({
+          x: this.player.x + sparkSide,
+          y: this.player.y + 4,
+          vx: (Math.random() - 0.5) * 130 + sparkSide * 3,
+          vy: 180 + Math.random() * 140,
+          radius: 2.5 + Math.random() * 2.5,
+          life: 0,
+          maxLife: 0.18 + Math.random() * 0.1,
+          color: Math.random() > 0.4 ? '#FFCC00' : '#FF5500',
+        });
+      }
+    }
+
+    // Update scrolling tire skid marks
+    for (let i = this.skidMarks.length - 1; i >= 0; i--) {
+      const sk = this.skidMarks[i];
+      sk.y1 += frameScroll;
+      sk.y2 += frameScroll;
+      sk.alpha -= safeDt * 0.65;
+      if (sk.alpha <= 0 || sk.y1 > LOGICAL_HEIGHT + 400) {
+        this.skidMarks.splice(i, 1);
+      }
+    }
+
+    // Update Nitro Afterimage Ghost Trail
+    if (isBoosting) {
+      this.bikeGhostTrail.push({
+        x: this.player.x,
+        y: this.player.y,
+        tilt: this.player.tiltAngle,
+        alpha: 0.42,
+      });
+    }
+    for (let i = this.bikeGhostTrail.length - 1; i >= 0; i--) {
+      const g = this.bikeGhostTrail[i];
+      g.y += frameScroll * 0.55;
+      g.alpha -= safeDt * 2.6;
+      if (g.alpha <= 0) {
+        this.bikeGhostTrail.splice(i, 1);
+      }
+    }
 
     // Exhaust particles
     const spawnChance = isBoosting ? 0.95 : 0.7;
@@ -829,7 +1263,8 @@ export class AgberoGameEngine {
       const distX = Math.abs(this.player.x - item.x);
       const distY = Math.abs(this.player.y - item.y);
       if (distX < this.player.width * 0.68 + 22 && distY < this.player.height * 0.55 + 22) {
-        const reward = item.value * this.comboMultiplier;
+        // Realistic Naira & Parcel pickup value (soft combo bonus instead of runaway multiplication)
+        const reward = Math.round(item.value * (1 + (this.comboMultiplier - 1) * 0.25));
         this.cashEarned += reward;
         soundFX.playCoinPickup(item.type === 'PARCEL');
         if (item.type === 'PARCEL') {
@@ -852,7 +1287,7 @@ export class AgberoGameEngine {
       }
     }
 
-    // Update Road Surface Hazards (Potholes & Puddles - non-lethal jolt + wobble)
+    // Update Road Surface Hazards (Potholes & Puddles - non-lethal jolt + wobble; Wheelie hops right over potholes!)
     for (let i = this.hazards.length - 1; i >= 0; i--) {
       const haz = this.hazards[i];
       haz.y += frameScroll;
@@ -865,18 +1300,30 @@ export class AgberoGameEngine {
         Math.abs(this.player.y - haz.y) < (this.player.height + haz.height) * 0.35
       ) {
         haz.triggered = true;
-        this.player.wobbleTimer = 0.65;
-        this.shakeTimeRemaining = 0.22;
-        this.shakeIntensity = 12;
-        soundFX.playPotholeJolt();
-        this.callouts.push({
-          id: this.nextCalloutId++,
-          text: haz.type === 'POTHOLE' ? 'LAGOS POTHOLE! HOLD BAR!' : 'SPLASH! SLIPPERY!',
-          x: this.player.x,
-          y: this.player.y - 70,
-          color: '#FF9500',
-          life: 0.9,
-        });
+        if (this.player.isWheelie) {
+          this.cashEarned += 30;
+          this.callouts.push({
+            id: this.nextCalloutId++,
+            text: 'WHEELIE HOP OVER POTHOLE! +₦30',
+            x: this.player.x,
+            y: this.player.y - 75,
+            color: '#00F5D4',
+            life: 0.95,
+          });
+        } else {
+          this.player.wobbleTimer = 0.65;
+          this.shakeTimeRemaining = 0.22;
+          this.shakeIntensity = 12;
+          soundFX.playPotholeJolt();
+          this.callouts.push({
+            id: this.nextCalloutId++,
+            text: haz.type === 'POTHOLE' ? 'LAGOS POTHOLE! HOLD BAR!' : 'SPLASH! SLIPPERY!',
+            x: this.player.x,
+            y: this.player.y - 70,
+            color: '#FF9500',
+            life: 0.9,
+          });
+        }
       }
 
       if (haz.y > LOGICAL_HEIGHT + 550) {
@@ -916,6 +1363,20 @@ export class AgberoGameEngine {
     for (let i = this.obstacles.length - 1; i >= 0; i--) {
       const obs = this.obstacles[i];
       obs.y += this.currentScrollSpeed * obs.speedMultiplier * safeDt;
+
+      // Danfo & Keke Diesel Exhaust Smoke Puffs
+      if (obs.type !== 'BARRICADE' && obs.y > -220 && obs.y < LOGICAL_HEIGHT && Math.random() < 0.25) {
+        this.exhaustParticles.push({
+          x: obs.x + (obs.type === 'DANFO' ? -obs.width * 0.28 : 0) + (Math.random() - 0.5) * 6,
+          y: obs.y + obs.height * 0.5 + 4,
+          vx: (Math.random() - 0.5) * 24,
+          vy: 70 + Math.random() * 50,
+          radius: 4.5 + Math.random() * 4,
+          life: 0,
+          maxLife: 0.34,
+          color: obs.type === 'DANFO' ? '#475569' : '#94A3B8',
+        });
+      }
 
       // Lane-Switching Danfo Blinker & Swerve AI
       if (obs.laneSwitchDirection !== 0 && !obs.hasSwitchedLane && obs.y > -40 && obs.y < 230) {
@@ -963,12 +1424,12 @@ export class AgberoGameEngine {
       // Fair AABB Collision Check (80% of visual dimensions)
       if (distX < playerHalfW + obsHalfW && distY < playerHalfH + obsHalfH) {
         if (this.boosterTimeRemaining > 0) {
-          this.smashObstacle(i, obsCenterX, obs.y, 'NITRO SMASH! +₦350', '#00F5D4', 350);
+          this.smashObstacle(i, obsCenterX, obs.y, 'NITRO SMASH! +₦60', '#00F5D4', 60);
           continue;
         } else if (this.hasShield) {
           this.hasShield = false;
           this.shieldTimeRemaining = 0;
-          this.smashObstacle(i, obsCenterX, obs.y, 'SHIELD SAVED YOU!', '#38BDF8', 150);
+          this.smashObstacle(i, obsCenterX, obs.y, 'SHIELD SAVED YOU!', '#38BDF8', 25);
           continue;
         } else {
           this.triggerCollision(
@@ -979,7 +1440,7 @@ export class AgberoGameEngine {
         }
       }
 
-      // Near-miss reward check with Combo Multiplier & Horn Charge
+      // Near-miss reward check with realistic Combo & Wheelie bonus
       const visualHalfW = (this.player.width + obs.width) / 2;
       const visualHalfH = (this.player.height + obs.height) / 2;
       if (!obs.nearMissed && distY < visualHalfH * 0.95 && distX < visualHalfW + 42) {
@@ -988,29 +1449,68 @@ export class AgberoGameEngine {
         this.hornCharge = Math.min(100, this.hornCharge + 24);
         this.comboMultiplier = Math.min(5, this.comboMultiplier + 1);
         this.comboResetTimer = 4.5;
-        const bonus = 250 * this.comboMultiplier;
+        const bonus = Math.round((25 + (this.comboMultiplier - 1) * 10) * wheelieMultiplier);
         this.cashEarned += bonus;
         soundFX.playNearMiss();
         this.callouts.push({
           id: this.nextCalloutId++,
-          text:
-            this.comboMultiplier > 1
-              ? `${this.comboMultiplier}X SHARP SWERVE! +₦${bonus}`
-              : `SHARP SWERVE! +₦${bonus}`,
+          text: this.player.isWheelie
+            ? `WHEELIE SWERVE 2X! +₦${bonus}`
+            : this.comboMultiplier > 1
+            ? `${this.comboMultiplier}X SHARP SWERVE! +₦${bonus}`
+            : `SHARP SWERVE! +₦${bonus}`,
           x: this.player.x,
           y: this.player.y - 68,
-          color: '#FFCC00',
+          color: this.player.isWheelie ? '#00F5D4' : '#FFCC00',
           life: 1.0,
         });
       }
 
       if (!obs.passed && obs.y - obs.height / 2 > this.player.y + this.player.height / 2) {
         obs.passed = true;
-        this.cashEarned += 50 * this.comboMultiplier;
+        this.cashEarned += 10 * wheelieMultiplier;
       }
 
       if (obs.y - obs.height > LOGICAL_HEIGHT + 550) {
         this.obstacles.splice(i, 1);
+      }
+    }
+
+    // 2. Slipstream / Tailgate Drafting Detection:
+    // Riding directly behind a Danfo or Keke within 260px charges the Slipstream Draft Meter!
+    const draftingTarget = this.obstacles.find(
+      (o) =>
+        o.type !== 'BARRICADE' &&
+        Math.abs(o.x - this.player.x) < 42 &&
+        o.y < this.player.y &&
+        this.player.y - (o.y + o.height / 2) < 250 &&
+        this.player.y - (o.y + o.height / 2) > 20
+    );
+    if (draftingTarget) {
+      this.player.slipstreamProgress = Math.min(
+        100,
+        this.player.slipstreamProgress + safeDt * 78
+      );
+    } else {
+      this.player.slipstreamProgress = Math.max(
+        0,
+        this.player.slipstreamProgress - safeDt * 45
+      );
+    }
+
+    // 1A. Update VIP Politician Siren Convoy ("Oga Siren")
+    this.updateVipConvoy(safeDt);
+
+    // 1B. Update Danfo "Agbero Chairman" Boss Chase
+    this.updateBossDanfo(safeDt);
+
+    // Update Comic Speech Bubbles
+    for (let i = this.speechBubbles.length - 1; i >= 0; i--) {
+      const sb = this.speechBubbles[i];
+      sb.y -= 28 * safeDt;
+      sb.life -= safeDt;
+      if (sb.life <= 0) {
+        this.speechBubbles.splice(i, 1);
       }
     }
 
@@ -1030,9 +1530,210 @@ export class AgberoGameEngine {
     }
   }
 
+  /**
+   * 1A. VIP Politician / Siren Convoy ("Oga Siren")
+   * Flashes a 2.0s rear-approach warning at the bottom of a lane before a black armored SUV convoy
+   * rockets upward from behind at 2x speed, smashing every vehicle in that lane!
+   */
+  private startVipConvoyEvent() {
+    const lane = Math.floor(Math.random() * 3) as LaneIndex;
+    this.vipConvoy = {
+      active: true,
+      lane,
+      warningTimer: 2.0,
+      y: LOGICAL_HEIGHT + 240,
+      sirenPhase: 0,
+    };
+    soundFX.playSirenWail();
+    this.callouts.push({
+      id: this.nextCalloutId++,
+      text: '⚠️ VIP SIREN CONVOY COMING FROM BEHIND!',
+      x: ROAD_CENTER_X,
+      y: this.player.y - 125,
+      color: '#FF2E2E',
+      life: 1.4,
+    });
+    this.syncHUD(true);
+  }
+
+  private updateVipConvoy(dt: number) {
+    if (!this.vipConvoy.active) return;
+
+    this.vipConvoy.sirenPhase += dt * 18;
+    if (this.vipConvoy.warningTimer > 0) {
+      const prevWarn = this.vipConvoy.warningTimer;
+      this.vipConvoy.warningTimer = Math.max(0, this.vipConvoy.warningTimer - dt);
+      if (Math.floor(prevWarn * 2.5) !== Math.floor(this.vipConvoy.warningTimer * 2.5)) {
+        soundFX.playSirenWail();
+      }
+      return;
+    }
+
+    // Rocket upward from bottom of screen to top
+    this.vipConvoy.y -= 1050 * dt;
+    const convoyX = LANE_CENTERS[this.vipConvoy.lane];
+
+    // Smash any traffic obstacles in the VIP Convoy's lane!
+    for (let i = this.obstacles.length - 1; i >= 0; i--) {
+      const obs = this.obstacles[i];
+      if (obs.lane === this.vipConvoy.lane && Math.abs(obs.y - this.vipConvoy.y) < 150) {
+        this.smashObstacle(i, obs.x, obs.y, 'VIP CONVOY CLEARED LANE!', '#38BDF8', 20);
+      }
+    }
+
+    // Check collision with Player if player didn't move out of the VIP Convoy's lane
+    if (
+      Math.abs(this.player.x - convoyX) < 58 &&
+      Math.abs(this.player.y - this.vipConvoy.y) < 110
+    ) {
+      if (this.boosterTimeRemaining > 0) {
+        this.cashEarned += 80;
+      } else if (this.hasShield) {
+        this.hasShield = false;
+        this.shieldTimeRemaining = 0;
+        this.vipConvoy.active = false;
+        this.callouts.push({
+          id: this.nextCalloutId++,
+          text: 'SHIELD BLOCKED VIP CONVOY!',
+          x: this.player.x,
+          y: this.player.y - 80,
+          color: '#38BDF8',
+          life: 1.1,
+        });
+        return;
+      } else {
+        this.triggerCollision(convoyX, this.player.y);
+        return;
+      }
+    }
+
+    if (this.vipConvoy.y < -350) {
+      this.vipConvoy.active = false;
+      this.cashEarned += 100;
+      this.callouts.push({
+        id: this.nextCalloutId++,
+        text: 'DODGED OGA SIREN! +₦100',
+        x: this.player.x,
+        y: this.player.y - 75,
+        color: '#00F5D4',
+        life: 1.1,
+      });
+      this.syncHUD(true);
+    }
+  }
+
+  /**
+   * 1B. Danfo "Agbero Chairman" Boss Chase
+   * Armored King Danfo Bus appears ahead at top of the screen for 15 seconds, swerving across lanes
+   * and dropping roadblock crates/barricades before peeling off with a +₦4,000 survival bounty!
+   */
+  private startBossDanfoEncounter() {
+    this.bossDanfo = {
+      active: true,
+      lane: 1,
+      targetLane: 1,
+      x: LANE_CENTERS[1],
+      y: -220,
+      timeRemaining: 14.0,
+      throwTimer: 1.6,
+      moveTimer: 2.0,
+      tauntText: BOSS_TAUNTS[0],
+    };
+    soundFX.playDanfoHorn();
+    this.spawnSpeechBubble(BOSS_TAUNTS[0], LANE_CENTERS[1], 110, true);
+    this.callouts.push({
+      id: this.nextCalloutId++,
+      text: '⚠️ BOSS: AGBERO CHAIRMAN KING DANFO!',
+      x: ROAD_CENTER_X,
+      y: this.player.y - 130,
+      color: '#FFCC00',
+      life: 1.6,
+    });
+    this.syncHUD(true);
+  }
+
+  private updateBossDanfo(dt: number) {
+    if (!this.bossDanfo.active) return;
+
+    // Slide into menacing top-of-screen position (y = 125)
+    if (this.bossDanfo.timeRemaining > 0) {
+      this.bossDanfo.y += (125 - this.bossDanfo.y) * Math.min(1, 4.5 * dt);
+      this.bossDanfo.timeRemaining = Math.max(0, this.bossDanfo.timeRemaining - dt);
+
+      // Lateral movement between lanes
+      const targetX = LANE_CENTERS[this.bossDanfo.targetLane];
+      this.bossDanfo.x += (targetX - this.bossDanfo.x) * Math.min(1, 6.5 * dt);
+
+      this.bossDanfo.moveTimer -= dt;
+      if (this.bossDanfo.moveTimer <= 0) {
+        this.bossDanfo.moveTimer = 1.8 + Math.random() * 1.1;
+        const lanes: LaneIndex[] = [0, 1, 2];
+        const nextLane = lanes[Math.floor(Math.random() * lanes.length)];
+        this.bossDanfo.targetLane = nextLane;
+        this.bossDanfo.lane = nextLane;
+
+        if (Math.random() < 0.55) {
+          const taunt = BOSS_TAUNTS[Math.floor(Math.random() * BOSS_TAUNTS.length)];
+          this.bossDanfo.tauntText = taunt;
+          this.spawnSpeechBubble(taunt, this.bossDanfo.x, this.bossDanfo.y + 115, true);
+          soundFX.playDanfoHorn();
+        }
+      }
+
+      // Drop hazard barricade / market crate from rear of Boss Danfo
+      this.bossDanfo.throwTimer -= dt;
+      if (this.bossDanfo.throwTimer <= 0) {
+        this.bossDanfo.throwTimer = 1.75;
+        const dropLane = this.bossDanfo.lane;
+        // Ensure at least 1 lane remains open when Boss drops a crate
+        const blockedNearTop = this.obstacles.filter((o) => o.y < 320).length;
+        if (blockedNearTop < 2) {
+          this.obstacles.push({
+            id: this.nextObstacleId++,
+            type: 'BARRICADE',
+            lane: dropLane,
+            x: LANE_CENTERS[dropLane],
+            targetLane: dropLane,
+            laneSwitchDirection: 0,
+            blinkerTimer: 0,
+            isSwitchingLane: false,
+            hasSwitchedLane: false,
+            y: this.bossDanfo.y + 100,
+            width: 112,
+            height: 60,
+            speedMultiplier: 0.92,
+            passed: false,
+            nearMissed: false,
+            label: 'BOSS CRATE',
+          });
+        }
+      }
+
+      if (this.bossDanfo.timeRemaining === 0) {
+        this.cashEarned += 500;
+        soundFX.playCheckpointFanfare();
+        this.callouts.push({
+          id: this.nextCalloutId++,
+          text: 'BOSS SURVIVED! +₦500 CHAIRMAN BOUNTY!',
+          x: ROAD_CENTER_X,
+          y: this.player.y - 120,
+          color: '#00F5D4',
+          life: 1.65,
+        });
+      }
+    } else {
+      // Peel off forward off the top of the screen
+      this.bossDanfo.y -= 650 * dt;
+      if (this.bossDanfo.y < -280) {
+        this.bossDanfo.active = false;
+        this.syncHUD(true);
+      }
+    }
+  }
+
   private advanceStageCheckpoint() {
     const currentStageDef = STAGES[(this.stageIndex - 1) % STAGES.length];
-    const bonus = this.stageIndex === 1 ? 3500 : this.stageIndex === 2 ? 5000 : 7500;
+    const bonus = this.stageIndex === 1 ? 750 : this.stageIndex === 2 ? 1200 : 2000;
     this.cashEarned += bonus;
     this.stageIndex += 1;
     this.nextStageMilestone += this.stageDistanceLeg;
@@ -1085,7 +1786,7 @@ export class AgberoGameEngine {
 
     if (type === 'BOOSTER') {
       this.boosterTimeRemaining = nitroDuration;
-      this.cashEarned += 400;
+      this.cashEarned += 80;
       this.shakeTimeRemaining = 0.18;
       this.shakeIntensity = 9;
       this.callouts.push({
@@ -1098,7 +1799,7 @@ export class AgberoGameEngine {
       });
     } else if (type === 'MAGNET') {
       this.magnetTimeRemaining = magnetDuration;
-      this.cashEarned += 300;
+      this.cashEarned += 60;
       this.callouts.push({
         id: this.nextCalloutId++,
         text: 'OWO MAGNET! PULLING ALL NAIRA!',
@@ -1110,7 +1811,7 @@ export class AgberoGameEngine {
     } else {
       this.hasShield = true;
       this.shieldTimeRemaining = shieldDuration;
-      this.cashEarned += 300;
+      this.cashEarned += 60;
       this.callouts.push({
         id: this.nextCalloutId++,
         text: 'AGBERO JUJU SHIELD ACTIVE!',
@@ -1252,7 +1953,7 @@ export class AgberoGameEngine {
         lane,
         x: LANE_CENTERS[lane],
         y: -120,
-        value: 450,
+        value: 80,
         spinPhase: 0,
         magnetized: false,
       });
@@ -1265,7 +1966,7 @@ export class AgberoGameEngine {
           lane,
           x: LANE_CENTERS[lane],
           y: -100 - i * 68,
-          value: 100,
+          value: 20,
           spinPhase: i * 0.6,
           magnetized: false,
         });
@@ -1371,11 +2072,13 @@ export class AgberoGameEngine {
 
   private triggerCollision(impactX: number, impactY: number) {
     this.isGameOver = true;
+    this.player.isWheelie = false;
     this.impactX = impactX;
     this.impactY = impactY;
     this.shakeTimeRemaining = 0.42;
     this.shakeIntensity = 22;
     this.crashFlashAlpha = 0.85;
+    soundFX.stopContinuousAudio();
     soundFX.playCrash();
 
     // Bank earned Naira & update persistent High Scores in localStorage!
@@ -1421,6 +2124,14 @@ export class AgberoGameEngine {
       nearMissCount: this.nearMissCount,
       comboMultiplier: this.comboMultiplier,
       hornCharge: Math.round(this.hornCharge),
+      isWheelie: this.player.isWheelie,
+      slipstreamProgress: Math.round(this.player.slipstreamProgress),
+      bossActive: this.bossDanfo.active && this.bossDanfo.timeRemaining > 0,
+      bossTimeRemaining: Number(this.bossDanfo.timeRemaining.toFixed(1)),
+      vipConvoyWarningLane:
+        this.vipConvoy.active && this.vipConvoy.warningTimer > 0
+          ? this.vipConvoy.lane
+          : null,
       hasShield: this.hasShield,
       shieldTimeRemaining: Number(this.shieldTimeRemaining.toFixed(1)),
       boosterTimeRemaining: Number(this.boosterTimeRemaining.toFixed(1)),
@@ -1442,7 +2153,8 @@ export class AgberoGameEngine {
     const MIN_VISIBLE_ROAD_CORRIDOR = ROAD_WIDTH + 140;
     const coverScale = Math.max(canvasW / LOGICAL_WIDTH, canvasH / LOGICAL_HEIGHT);
     const maxSafeHorizontalScale = canvasW / MIN_VISIBLE_ROAD_CORRIDOR;
-    const scale = Math.min(coverScale, maxSafeHorizontalScale);
+    const baseScale = Math.min(coverScale, maxSafeHorizontalScale);
+    const scale = baseScale * this.cameraZoom;
 
     ctx.save();
     ctx.fillStyle = '#0E0B16';
@@ -1463,6 +2175,8 @@ export class AgberoGameEngine {
 
     this.drawEnvironment(ctx);
     this.drawExpressway(ctx);
+    this.drawSkidMarks(ctx);
+    this.drawAsphaltReflections(ctx);
     this.drawRoadHazards(ctx);
     this.drawCollectibles(ctx);
     this.drawPowerUps(ctx);
@@ -1473,10 +2187,15 @@ export class AgberoGameEngine {
       this.drawObstacle(ctx, obs);
     }
 
+    this.drawVipConvoy(ctx);
+    this.drawBossDanfo(ctx);
+    this.drawBikeGhostTrail(ctx);
     this.drawPlayerBike(ctx);
+    this.drawSlipstreamDraftMeter(ctx);
     this.drawHornShockwave(ctx);
     this.drawLandmarkGates(ctx);
     this.drawRainWeather(ctx);
+    this.drawSpeechBubbles(ctx);
     this.drawFloatingCallouts(ctx);
 
     const visibleLeft = -offsetX / scale;
@@ -1563,6 +2282,82 @@ export class AgberoGameEngine {
       ctx.strokeRect(ROAD_RIGHT + 30, y + 60, 55, 10);
       ctx.fillStyle = stageMod === 1 ? '#00F5D4' : '#FFCC00';
       ctx.fillRect(ROAD_RIGHT + 32, y + 62, 10, 6);
+    }
+
+    // Rich Lagos Lagoon Waves, Wooden Fishing Canoes, Bus-Stop Shelters & Cable-Stay Bridge Cables
+    const sceneryPeriod = 720;
+    const scOffset = this.sceneryScrollOffset;
+    for (
+      let sy = EXT_TOP - sceneryPeriod + scOffset;
+      sy < EXT_BOTTOM + sceneryPeriod;
+      sy += sceneryPeriod
+    ) {
+      // 1. Shimmering Lagos Lagoon Water Ripples & Wooden Fishing Canoe (Left Shoulder)
+      ctx.strokeStyle =
+        stageMod === 1 ? 'rgba(0, 245, 212, 0.22)' : 'rgba(255, 204, 0, 0.22)';
+      ctx.lineWidth = 3;
+      for (let wy = 0; wy < 140; wy += 35) {
+        ctx.beginPath();
+        ctx.moveTo(45, sy + wy);
+        ctx.quadraticCurveTo(95, sy + wy - 10, 145, sy + wy);
+        ctx.stroke();
+      }
+
+      // Wooden Makoko / Lagoon Fishing Canoe
+      const canoeX = 135;
+      const canoeY = sy + 180;
+      ctx.fillStyle = '#4A2C18';
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(canoeX, canoeY - 52);
+      ctx.quadraticCurveTo(canoeX + 22, canoeY, canoeX, canoeY + 52);
+      ctx.quadraticCurveTo(canoeX - 22, canoeY, canoeX, canoeY - 52);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Canoe wooden benches & lantern glow
+      ctx.fillStyle = '#7C4D2B';
+      ctx.fillRect(canoeX - 9, canoeY - 16, 18, 6);
+      ctx.fillRect(canoeX - 9, canoeY + 10, 18, 6);
+      ctx.fillStyle = '#FFCC00';
+      ctx.beginPath();
+      ctx.arc(canoeX, canoeY - 32, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 2. Lagos Yellow-and-Black Bus Stop Shelter & "OWA O!" Comic Callout (Right Shoulder)
+      const shelterX = ROAD_RIGHT + 42;
+      const shelterY = sy + 320;
+      ctx.fillStyle = '#FFCC00';
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 4.5;
+      this.fillRoundedRect(ctx, shelterX, shelterY, 64, 110, 8);
+      this.strokeRoundedRect(ctx, shelterX, shelterY, 64, 110, 8);
+
+      // Black hazard stripes on bus stop roof
+      ctx.fillStyle = '#0D0C10';
+      ctx.fillRect(shelterX + 6, shelterY + 10, 52, 12);
+      ctx.fillRect(shelterX + 6, shelterY + 88, 52, 12);
+      ctx.fillStyle = '#FFFDF7';
+      ctx.font = '900 9px "Inter", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('BUS STOP', shelterX + 32, shelterY + 55);
+
+      // Lekki-Ikoyi Style Diagonal Suspension Bridge Stay-Cables (Stage 2 & 3)
+      if (this.stageIndex >= 2) {
+        ctx.strokeStyle = 'rgba(226, 232, 240, 0.16)';
+        ctx.lineWidth = 3;
+        for (let c = 0; c < 4; c++) {
+          ctx.beginPath();
+          ctx.moveTo(ROAD_LEFT - 30, sy + c * 65);
+          ctx.lineTo(0, sy - 180 + c * 40);
+          ctx.moveTo(ROAD_RIGHT + 30, sy + c * 65);
+          ctx.lineTo(LOGICAL_WIDTH, sy - 180 + c * 40);
+          ctx.stroke();
+        }
+      }
     }
 
     const isBoosting = this.boosterTimeRemaining > 0;
@@ -1723,6 +2518,84 @@ export class AgberoGameEngine {
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 4.5;
     ctx.strokeRect(x, y, w, h);
+  }
+
+  /**
+   * Tire Skid Marks left on asphalt during sharp high-speed lane swerves
+   */
+  private drawSkidMarks(ctx: CanvasRenderingContext2D) {
+    if (this.skidMarks.length === 0) return;
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const sk of this.skidMarks) {
+      ctx.strokeStyle = `rgba(13, 12, 16, ${Math.max(0, sk.alpha)})`;
+      ctx.lineWidth = 9;
+      ctx.beginPath();
+      ctx.moveTo(sk.x1, sk.y1);
+      ctx.lineTo(sk.x2, sk.y2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Specular Wet-Asphalt Reflections of Vehicle Tail-Lights, Headlights & Naira Pickups
+   */
+  private drawAsphaltReflections(ctx: CanvasRenderingContext2D) {
+    ctx.save();
+    // Reflections are extra glossy during Stage 2 Neon Dusk & Stage 3 Monsoon Rain
+    const wetness = this.stageIndex >= 3 ? 0.34 : this.stageIndex === 2 ? 0.24 : 0.16;
+
+    for (const obs of this.obstacles) {
+      if (obs.type === 'BARRICADE') continue;
+      const hw = obs.width / 2;
+      const hh = obs.height / 2;
+
+      // Forward Golden Headlight Cone on Asphalt ahead of Danfo & Keke
+      const headGrad = ctx.createLinearGradient(obs.x, obs.y - hh, obs.x, obs.y - hh - 130);
+      headGrad.addColorStop(0, `rgba(255, 224, 102, ${wetness * 1.3})`);
+      headGrad.addColorStop(1, 'rgba(255, 224, 102, 0)');
+      ctx.fillStyle = headGrad;
+      ctx.beginPath();
+      ctx.moveTo(obs.x - hw + 8, obs.y - hh + 4);
+      ctx.lineTo(obs.x - hw - 18, obs.y - hh - 130);
+      ctx.lineTo(obs.x + hw + 18, obs.y - hh - 130);
+      ctx.lineTo(obs.x + hw - 8, obs.y - hh + 4);
+      ctx.closePath();
+      ctx.fill();
+
+      // Rear Crimson Tail-Light Specular Smear on Asphalt behind Danfo & Keke
+      const tailGrad = ctx.createLinearGradient(obs.x, obs.y + hh, obs.x, obs.y + hh + 75);
+      tailGrad.addColorStop(0, `rgba(255, 46, 46, ${wetness * 1.45})`);
+      tailGrad.addColorStop(1, 'rgba(255, 46, 46, 0)');
+      ctx.fillStyle = tailGrad;
+      ctx.fillRect(obs.x - hw + 6, obs.y + hh, 22, 70);
+      ctx.fillRect(obs.x + hw - 28, obs.y + hh, 22, 70);
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * 3-Frame Translucent Afterimage Ghost Trail behind the Biker during Nitro Boost
+   */
+  private drawBikeGhostTrail(ctx: CanvasRenderingContext2D) {
+    if (this.bikeGhostTrail.length === 0) return;
+    const { width, height } = this.player;
+    for (const g of this.bikeGhostTrail) {
+      ctx.save();
+      ctx.translate(g.x, g.y);
+      ctx.rotate(g.tilt);
+      ctx.globalAlpha = Math.max(0, g.alpha * 0.55);
+      ctx.fillStyle = '#00F5D4';
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, width * 0.42, height * 0.46, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   private drawRoadHazards(ctx: CanvasRenderingContext2D) {
@@ -1892,7 +2765,11 @@ export class AgberoGameEngine {
     ctx.save();
     ctx.translate(cx, cy);
 
-    // Slight tilt when a Danfo is actively swerving between lanes
+    // Slight tilt & diesel engine chassis vibration on Danfo / Keke
+    const engineRattle =
+      obs.type !== 'BARRICADE' ? Math.sin(this.elapsedTime * 42 + obs.id) * 1.1 : 0;
+    ctx.translate(engineRattle, 0);
+
     if (obs.isSwitchingLane) {
       const targetX = LANE_CENTERS[obs.targetLane];
       const tilt = ((targetX - obs.x) / LANE_WIDTH) * 0.22;
@@ -1974,8 +2851,18 @@ export class AgberoGameEngine {
     this.fillRoundedRect(ctx, -hw, -hh, w, h, 14);
     this.strokeRoundedRect(ctx, -hw, -hh, w, h, 14);
 
+    // Left specular cel-highlight strip
     ctx.fillStyle = 'rgba(255, 250, 210, 0.55)';
     ctx.fillRect(-hw + 6, -hh + 14, 5, h - 28);
+
+    // Spider-Verse Style Comic Halftone Dot Shading along right shadow edge
+    ctx.fillStyle = 'rgba(13, 12, 16, 0.25)';
+    for (let hy = -hh + 24; hy < hh - 24; hy += 12) {
+      ctx.beginPath();
+      ctx.arc(hw - 16, hy, 2.2, 0, Math.PI * 2);
+      ctx.arc(hw - 22, hy + 6, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     ctx.fillStyle = '#0D0C10';
     ctx.fillRect(-hw + 3, -hh + 18, 9, h - 36);
@@ -2283,8 +3170,9 @@ export class AgberoGameEngine {
   }
 
   private drawPlayerBike(ctx: CanvasRenderingContext2D) {
-    const { x, y, width, height, tiltAngle, bobPhase } = this.player;
-    const isBoosting = this.boosterTimeRemaining > 0;
+    const { x, y, width, height, tiltAngle, bobPhase, isWheelie } = this.player;
+    const isBoosting =
+      this.boosterTimeRemaining > 0 || this.player.slipstreamBoostTimer > 0;
     const engineBob = Math.sin(bobPhase) * (isBoosting ? 2.4 : 1.6);
     const skin = BIKE_SKINS[this.saveData.selectedSkin] || BIKE_SKINS.RED_BOXER;
 
@@ -2292,8 +3180,25 @@ export class AgberoGameEngine {
     ctx.translate(x, y + engineBob);
     ctx.rotate(tiltAngle);
 
+    // If popping a ONE-WHEELIE Overdrive Stunt, pitch front of bike upward & scale slightly!
+    if (isWheelie) {
+      ctx.translate(0, -10);
+      ctx.scale(1.06, 0.91);
+    }
+
     const hw = width / 2;
     const hh = height / 2;
+
+    // 0. ONE-WHEELIE 2X OVERDRIVE GOLDEN STUNT RING
+    if (isWheelie) {
+      ctx.strokeStyle = '#FFCC00';
+      ctx.lineWidth = 3.5;
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath();
+      ctx.arc(0, 12, width * 0.72, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     // 1. NITRO BOOSTER HYPER-FLAME JETS
     if (isBoosting) {
@@ -2352,12 +3257,17 @@ export class AgberoGameEngine {
     this.fillRoundedRect(ctx, 12, 14, 7, 34, 3);
     this.strokeRoundedRect(ctx, 12, 14, 7, 34, 3);
 
-    // 5. Front Tire & Forks
+    // 5. Front Tire with Animated Spinning Rim/Tread Streaks & Forks
     ctx.fillStyle = '#18181F';
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 4;
     this.fillRoundedRect(ctx, -7.5, -hh - 8, 15, 30, 7);
     this.strokeRoundedRect(ctx, -7.5, -hh - 8, 15, 30, 7);
+
+    // Spinning tire tread motion blur streak
+    const treadOffset = (this.roadScrollOffset * 0.45) % 14;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.fillRect(-3, -hh - 5 + treadOffset, 6, 5);
 
     ctx.fillStyle = '#CBD5E1';
     ctx.fillRect(-10, -hh + 8, 4, 16);
@@ -2565,6 +3475,247 @@ export class AgberoGameEngine {
     ctx.restore();
   }
 
+  /**
+   * 1A. Draw VIP Politician Siren Convoy ("Oga Siren") Warning Strip & Armored Black SUV
+   */
+  private drawVipConvoy(ctx: CanvasRenderingContext2D) {
+    if (!this.vipConvoy.active) return;
+    const cx = LANE_CENTERS[this.vipConvoy.lane];
+    const isRedFlash = Math.floor(this.vipConvoy.sirenPhase) % 2 === 0;
+
+    ctx.save();
+    // If still in 2.0s warning phase, draw flashing Red/Blue Siren Danger Zone at bottom of lane
+    if (this.vipConvoy.warningTimer > 0) {
+      const warnY = LOGICAL_HEIGHT - 55;
+      ctx.fillStyle = isRedFlash
+        ? 'rgba(255, 46, 46, 0.25)'
+        : 'rgba(37, 99, 235, 0.25)';
+      ctx.fillRect(cx - LANE_WIDTH / 2 + 8, 0, LANE_WIDTH - 16, LOGICAL_HEIGHT);
+
+      ctx.fillStyle = isRedFlash ? '#FF2E2E' : '#2563EB';
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 4;
+      this.fillRoundedRect(ctx, cx - 72, warnY - 24, 144, 44, 8);
+      this.strokeRoundedRect(ctx, cx - 72, warnY - 24, 144, 44, 8);
+
+      ctx.fillStyle = '#FFFDF7';
+      ctx.font = '900 12px "Black Ops One", "Impact", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('▲ OGA SIREN ▲', cx, warnY - 7);
+      ctx.font = '900 10px "JetBrains Mono", monospace';
+      ctx.fillText(`CLEAR LANE ${this.vipConvoy.warningTimer.toFixed(1)}s`, cx, warnY + 9);
+      ctx.restore();
+      return;
+    }
+
+    // Draw Black Armored VIP Politician Prado / V8 SUV rocketing upward
+    const w = 96;
+    const h = 176;
+    const hw = w / 2;
+    const hh = h / 2;
+    ctx.translate(cx, this.vipConvoy.y);
+
+    // High-beam Xenon Headlight cones projecting UPWARD
+    const beamGrad = ctx.createLinearGradient(0, -hh, 0, -hh - 210);
+    beamGrad.addColorStop(0, 'rgba(56, 189, 248, 0.65)');
+    beamGrad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+    ctx.fillStyle = beamGrad;
+    ctx.beginPath();
+    ctx.moveTo(-hw + 10, -hh);
+    ctx.lineTo(-hw - 25, -hh - 210);
+    ctx.lineTo(hw + 25, -hh - 210);
+    ctx.lineTo(hw - 10, -hh);
+    ctx.closePath();
+    ctx.fill();
+
+    // SUV Drop Shadow
+    ctx.fillStyle = 'rgba(13, 12, 16, 0.8)';
+    this.fillRoundedRect(ctx, -hw + 10, -hh + 12, w, h, 14);
+
+    // Glossy Black Armored SUV Body
+    ctx.fillStyle = '#111827';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 5.5;
+    this.fillRoundedRect(ctx, -hw, -hh, w, h, 14);
+    this.strokeRoundedRect(ctx, -hw, -hh, w, h, 14);
+
+    // Chrome Bull-Bar on Front Nose
+    ctx.fillStyle = '#E2E8F0';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3.5;
+    this.fillRoundedRect(ctx, -hw + 14, -hh - 6, w - 28, 10, 4);
+    this.strokeRoundedRect(ctx, -hw + 14, -hh - 6, w - 28, 10, 4);
+
+    // Tinted Presidential Windshield & Roof
+    ctx.fillStyle = '#1E293B';
+    this.fillRoundedRect(ctx, -hw + 12, -hh + 22, w - 24, 30, 6);
+    ctx.fillStyle = '#1F2937';
+    this.fillRoundedRect(ctx, -hw + 14, -hh + 54, w - 28, h - 82, 8);
+    this.strokeRoundedRect(ctx, -hw + 14, -hh + 54, w - 28, h - 82, 8);
+
+    // Flashing Red & Blue Police Lightbar on SUV Roof
+    ctx.fillStyle = isRedFlash ? '#FF2E2E' : '#2563EB';
+    ctx.fillRect(-26, -hh + 64, 24, 10);
+    ctx.fillStyle = isRedFlash ? '#2563EB' : '#FF2E2E';
+    ctx.fillRect(2, -hh + 64, 24, 10);
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(-26, -hh + 64, 52, 10);
+
+    // Glowing Red/Blue Siren Halo
+    ctx.fillStyle = isRedFlash
+      ? 'rgba(255, 46, 46, 0.35)'
+      : 'rgba(37, 99, 235, 0.35)';
+    ctx.beginPath();
+    ctx.arc(0, -hh + 69, 48, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  /**
+   * 1B. Draw "Agbero Chairman" Armored King Danfo Boss Bus
+   */
+  private drawBossDanfo(ctx: CanvasRenderingContext2D) {
+    if (!this.bossDanfo.active) return;
+
+    const w = 118;
+    const h = 198;
+    const hw = w / 2;
+    const hh = h / 2;
+
+    ctx.save();
+    ctx.translate(this.bossDanfo.x, this.bossDanfo.y);
+
+    // Heavy Engine Rattle
+    ctx.translate(Math.sin(this.elapsedTime * 50) * 1.8, 0);
+
+    // Drop Shadow
+    ctx.fillStyle = 'rgba(13, 12, 16, 0.82)';
+    this.fillRoundedRect(ctx, -hw + 12, -hh + 14, w, h, 16);
+
+    // Armored Gold & Crimson King Danfo Chassis
+    const bossGrad = ctx.createLinearGradient(-hw, 0, hw, 0);
+    bossGrad.addColorStop(0, '#FFCC00');
+    bossGrad.addColorStop(0.5, '#F59E0B');
+    bossGrad.addColorStop(1, '#B45309');
+    ctx.fillStyle = bossGrad;
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 6;
+    this.fillRoundedRect(ctx, -hw, -hh, w, h, 16);
+    this.strokeRoundedRect(ctx, -hw, -hh, w, h, 16);
+
+    // Heavy Black & Red Chairman Stripes
+    ctx.fillStyle = '#0D0C10';
+    ctx.fillRect(-hw + 4, -hh + 18, 12, h - 36);
+    ctx.fillRect(hw - 16, -hh + 18, 12, h - 36);
+    ctx.fillStyle = '#FF2E2E';
+    ctx.fillRect(-hw + 16, -hh + 24, 5, h - 48);
+    ctx.fillRect(hw - 21, -hh + 24, 5, h - 48);
+
+    // Armored Roof Cage & "CHAIRMAN" Crown Banner
+    ctx.fillStyle = '#1E1D26';
+    this.fillRoundedRect(ctx, -hw + 20, -hh + 34, w - 40, h - 72, 8);
+    this.strokeRoundedRect(ctx, -hw + 20, -hh + 34, w - 40, h - 72, 8);
+
+    ctx.fillStyle = '#FF2E2E';
+    ctx.fillRect(-hw + 24, hh - 68, w - 48, 22);
+    ctx.fillStyle = '#FFFDF7';
+    ctx.font = '900 11px "Black Ops One", "Impact", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('KING AGBERO', 0, hh - 57);
+
+    // Rear Hazard Drop Ramp
+    ctx.fillStyle = '#FFCC00';
+    ctx.fillRect(-hw + 14, hh - 16, w - 28, 10);
+
+    ctx.restore();
+  }
+
+  /**
+   * 2. Draw Slipstream / Tailgate Drafting Arc Meter around Biker
+   */
+  private drawSlipstreamDraftMeter(ctx: CanvasRenderingContext2D) {
+    if (this.player.slipstreamProgress <= 5) return;
+    const pct = this.player.slipstreamProgress / 100;
+
+    ctx.save();
+    ctx.translate(this.player.x, this.player.y);
+
+    // Aerodynamic Wind Cone Streaming off Vehicle Ahead
+    ctx.strokeStyle = `rgba(0, 245, 212, ${0.25 + pct * 0.55})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-26, -75);
+    ctx.lineTo(-38, 35);
+    ctx.moveTo(26, -75);
+    ctx.lineTo(38, 35);
+    ctx.stroke();
+
+    // Circular Draft Charge Meter above Front Wheel
+    ctx.fillStyle = '#0D0C10';
+    ctx.strokeStyle = pct >= 0.85 ? '#00F5D4' : '#FFCC00';
+    ctx.lineWidth = 3;
+    this.fillRoundedRect(ctx, -44, -84, 88, 16, 4);
+    this.strokeRoundedRect(ctx, -44, -84, 88, 16, 4);
+
+    ctx.fillStyle = pct >= 0.85 ? '#00F5D4' : '#FFCC00';
+    ctx.fillRect(-41, -81, 82 * pct, 10);
+
+    ctx.fillStyle = '#0D0C10';
+    ctx.font = '900 8.5px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(pct >= 0.85 ? 'SWERVE NOW!' : 'DRAFTING...', 0, -76);
+
+    ctx.restore();
+  }
+
+  /**
+   * 3. Draw Comic-Book Pidgin Slang Speech Bubbles
+   */
+  private drawSpeechBubbles(ctx: CanvasRenderingContext2D) {
+    for (const sb of this.speechBubbles) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, sb.life * 1.2));
+      ctx.font = '900 12px "Inter", sans-serif';
+      const textW = ctx.measureText(sb.text).width;
+      const boxW = textW + 24;
+      const boxH = 28;
+      const bx = Math.max(ROAD_LEFT + boxW / 2, Math.min(ROAD_RIGHT - boxW / 2, sb.x));
+      const by = sb.y;
+
+      // Hard Comic Shadow
+      ctx.fillStyle = '#0D0C10';
+      this.fillRoundedRect(ctx, bx - boxW / 2 + 4, by - boxH / 2 + 4, boxW, boxH, 8);
+
+      // Speech Bubble Box
+      ctx.fillStyle = sb.isBoss ? '#FF2E2E' : '#FFFDF7';
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 3.5;
+      this.fillRoundedRect(ctx, bx - boxW / 2, by - boxH / 2, boxW, boxH, 8);
+      this.strokeRoundedRect(ctx, bx - boxW / 2, by - boxH / 2, boxW, boxH, 8);
+
+      // Speech Bubble Pointer Triangle
+      ctx.beginPath();
+      ctx.moveTo(bx - 6, by + boxH / 2);
+      ctx.lineTo(bx, by + boxH / 2 + 8);
+      ctx.lineTo(bx + 6, by + boxH / 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = sb.isBoss ? '#FFFDF7' : '#0D0C10';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(sb.text, bx, by);
+
+      ctx.restore();
+    }
+  }
+
   private drawHornShockwave(ctx: CanvasRenderingContext2D) {
     if (this.hornShockwaveAlpha <= 0) return;
     ctx.save();
@@ -2623,15 +3774,17 @@ export class AgberoGameEngine {
   }
 
   private drawFloatingCallouts(ctx: CanvasRenderingContext2D) {
-    for (const c of this.callouts) {
+    // Only render the most recent 2 callouts so text never piles up on the road
+    const visibleCallouts = this.callouts.slice(-2);
+    for (const c of visibleCallouts) {
       ctx.save();
       ctx.globalAlpha = Math.max(0, Math.min(1, c.life));
-      ctx.font = '900 18px "Black Ops One", "Impact", sans-serif';
+      ctx.font = '900 15px "Black Ops One", "Impact", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
       ctx.strokeStyle = '#0D0C10';
-      ctx.lineWidth = 6;
+      ctx.lineWidth = 5;
       ctx.strokeText(c.text, c.x, c.y);
 
       ctx.fillStyle = c.color;
