@@ -623,6 +623,11 @@ export class AgberoGameEngine {
   private onHUDUpdate: (hud: GameHUDData) => void;
   private lastHudSyncTime = 0;
 
+  // AAA Next-Gen 2.5D Graphics State: Cached Procedural Micro-Aggregate Asphalt Pattern & Dynamic Camera Sway
+  private asphaltPattern: CanvasPattern | null = null;
+  private cameraBankAngle = 0;
+  private cameraParallaxX = 0;
+
   constructor(onHUDUpdate: (hud: GameHUDData) => void, initialGracePeriodMs = 1500) {
     this.onHUDUpdate = onHUDUpdate;
     this.gracePeriodSeconds = initialGracePeriodMs / 1000;
@@ -630,7 +635,51 @@ export class AgberoGameEngine {
     this.player = this.createInitialPlayer();
     this.initSpeedLines();
     this.initRainDrops();
+    this.initProceduralAsphaltPattern();
     this.loadOptionalAssets();
+  }
+
+  /**
+   * Generates a high-frequency procedural asphalt aggregate & bitumin tar-speckle tile pattern once
+   * so the road surface looks like a real next-gen game material at 60fps.
+   */
+  private initProceduralAsphaltPattern() {
+    if (typeof document === 'undefined') return;
+    try {
+      const tile = document.createElement('canvas');
+      tile.width = 128;
+      tile.height = 128;
+      const tctx = tile.getContext('2d');
+      if (!tctx) return;
+
+      tctx.fillStyle = '#211E29';
+      tctx.fillRect(0, 0, 128, 128);
+
+      // Micro-stone aggregate & dark bitumen flecks
+      for (let i = 0; i < 420; i++) {
+        const px = Math.random() * 128;
+        const py = Math.random() * 128;
+        const isLight = Math.random() > 0.55;
+        tctx.fillStyle = isLight
+          ? 'rgba(255, 248, 230, 0.055)'
+          : 'rgba(8, 7, 12, 0.22)';
+        tctx.fillRect(px, py, isLight ? 1.5 : 2, isLight ? 2 : 3);
+      }
+
+      // Fine vertical tire-polish micro-grooves
+      tctx.strokeStyle = 'rgba(255, 200, 110, 0.03)';
+      tctx.lineWidth = 1;
+      for (let gx = 4; gx < 128; gx += 12) {
+        tctx.beginPath();
+        tctx.moveTo(gx, 0);
+        tctx.lineTo(gx, 128);
+        tctx.stroke();
+      }
+
+      this.asphaltPattern = tctx.createPattern(tile, 'repeat');
+    } catch {
+      this.asphaltPattern = null;
+    }
   }
 
   public reloadSaveData() {
@@ -1022,9 +1071,15 @@ export class AgberoGameEngine {
     this.asphaltGrainOffset = (this.asphaltGrainOffset + frameScroll) % 240;
     this.sceneryScrollOffset = (this.sceneryScrollOffset + frameScroll) % 720;
 
-    // Smooth Dynamic Camera FOV Zoom: widens FOV slightly when Boosting or at Peak Rush Hour
+    // Smooth Dynamic Camera FOV Zoom, Chase-Cam Lateral Parallax & Banking Tilt
     const targetZoom = isBoosting ? 0.935 : 1.0 - difficultyProgress * 0.03;
     this.cameraZoom += (targetZoom - this.cameraZoom) * Math.min(1, 5.5 * safeDt);
+
+    const targetParallaxX = (ROAD_CENTER_X - this.player.x) * 0.16;
+    this.cameraParallaxX += (targetParallaxX - this.cameraParallaxX) * Math.min(1, 8 * safeDt);
+
+    const targetBank = -this.player.tiltAngle * 0.055;
+    this.cameraBankAngle += (targetBank - this.cameraBankAngle) * Math.min(1, 9 * safeDt);
 
     if (isActive) {
       const metersDelta = frameScroll * 0.055;
@@ -2160,8 +2215,12 @@ export class AgberoGameEngine {
     ctx.fillStyle = '#0E0B16';
     ctx.fillRect(0, 0, canvasW, canvasH);
 
-    const offsetX = (canvasW - LOGICAL_WIDTH * scale) / 2;
+    // Apply Dynamic 3D Chase-Cam Lateral Parallax & Banking Tilt
+    const offsetX = (canvasW - LOGICAL_WIDTH * scale) / 2 + this.cameraParallaxX * scale;
     const offsetY = (canvasH - LOGICAL_HEIGHT * scale) / 2;
+    ctx.translate(canvasW / 2, canvasH / 2);
+    ctx.rotate(this.cameraBankAngle);
+    ctx.translate(-canvasW / 2, -canvasH / 2);
     ctx.translate(offsetX, offsetY);
     ctx.scale(scale, scale);
 
@@ -2195,13 +2254,17 @@ export class AgberoGameEngine {
     this.drawHornShockwave(ctx);
     this.drawLandmarkGates(ctx);
     this.drawRainWeather(ctx);
-    this.drawSpeechBubbles(ctx);
-    this.drawFloatingCallouts(ctx);
 
     const visibleLeft = -offsetX / scale;
     const visibleTop = -offsetY / scale;
     const visibleW = canvasW / scale;
     const visibleH = canvasH / scale;
+
+    // AAA Post-Processing Shader Pass: Additive HDR Bloom, Sodium Streetlight Pools, Anamorphic Lens Flares & Horizon Glow
+    this.drawPostProcessingLightingPass(ctx, visibleLeft, visibleTop, visibleW, visibleH);
+
+    this.drawSpeechBubbles(ctx);
+    this.drawFloatingCallouts(ctx);
 
     if (this.boosterTimeRemaining > 0) {
       ctx.strokeStyle = 'rgba(0, 245, 212, 0.45)';
@@ -2387,6 +2450,15 @@ export class AgberoGameEngine {
 
     ctx.fillStyle = asphaltGrad;
     ctx.fillRect(ROAD_LEFT, EXT_TOP, ROAD_WIDTH, EXT_HEIGHT);
+
+    // Tile High-Frequency Procedural Micro-Aggregate Asphalt Texture
+    if (this.asphaltPattern) {
+      ctx.save();
+      ctx.translate(ROAD_LEFT, this.asphaltGrainOffset);
+      ctx.fillStyle = this.asphaltPattern;
+      ctx.fillRect(0, EXT_TOP - 240, ROAD_WIDTH, EXT_HEIGHT + 480);
+      ctx.restore();
+    }
 
     for (let lane = 0; lane < 3; lane++) {
       const cx = LANE_CENTERS[lane];
@@ -2815,8 +2887,45 @@ export class AgberoGameEngine {
     const hw = w / 2;
     const hh = h / 2;
 
-    ctx.fillStyle = 'rgba(13, 12, 16, 0.76)';
+    // 2.5D Perspective Parallax Extrusion:
+    // Calculate horizontal offset from the camera centerline so you see the 3D right passenger doors
+    // when the Danfo is in the Left Lane, and the 3D left driver side when in the Right Lane!
+    const cameraCenterX = ROAD_CENTER_X - this.cameraParallaxX * 1.5;
+    const perspX = Math.max(-16, Math.min(16, ((cameraCenterX - obs.x) / LANE_WIDTH) * 11));
+    const perspY = -7;
+
+    // Soft Ambient Occlusion Ground Shadow + Hard Directional Shadow
+    const aoGrad = ctx.createRadialGradient(5, 8, hw * 0.3, 5, 8, Math.max(hw, hh) * 1.15);
+    aoGrad.addColorStop(0, 'rgba(6, 5, 10, 0.85)');
+    aoGrad.addColorStop(0.7, 'rgba(6, 5, 10, 0.45)');
+    aoGrad.addColorStop(1, 'rgba(6, 5, 10, 0)');
+    ctx.fillStyle = aoGrad;
+    ctx.fillRect(-hw - 18, -hh - 14, w + 36, h + 36);
+
+    ctx.fillStyle = 'rgba(10, 9, 14, 0.72)';
     this.fillRoundedRect(ctx, -hw + 11, -hh + 14, w, h, 15);
+
+    // 2.5D 3D Extruded Side-Wall Chassis & Passenger Windows (Visible on Left or Right side depending on lane!)
+    if (Math.abs(perspX) > 2.5) {
+      const sideX = perspX > 0 ? hw - 8 : -hw - Math.abs(perspX);
+      const sideW = Math.abs(perspX) + 8;
+      ctx.fillStyle = '#B87D00';
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 4;
+      this.fillRoundedRect(ctx, sideX, -hh + 6, sideW, h - 12, 8);
+      this.strokeRoundedRect(ctx, sideX, -hh + 6, sideW, h - 12, 8);
+
+      // 3D Side Passenger Windows along extruded wall
+      ctx.fillStyle = '#0F172A';
+      for (let swy = -hh + 26; swy < hh - 38; swy += 28) {
+        ctx.fillRect(
+          perspX > 0 ? hw - 2 : -hw - Math.abs(perspX) + 3,
+          swy,
+          Math.max(4, Math.abs(perspX) - 3),
+          18
+        );
+      }
+    }
 
     ctx.fillStyle = '#14131A';
     ctx.strokeStyle = '#0D0C10';
@@ -2894,11 +3003,27 @@ export class AgberoGameEngine {
 
     const roofW = w - 26;
     const roofH = h - 78;
+    const roofShiftX = perspX * 0.45;
+    const roofShiftY = perspY * 0.45;
+    ctx.save();
+    ctx.translate(roofShiftX, roofShiftY);
+
     ctx.fillStyle = '#FFE159';
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 4;
     this.fillRoundedRect(ctx, -roofW / 2, -hh + 36, roofW, roofH, 8);
     this.strokeRoundedRect(ctx, -roofW / 2, -hh + 36, roofW, roofH, 8);
+
+    // Dynamic Moving Clear-Coat Roof Specular Reflection Band (Simulates passing overhead streetlamps!)
+    const sheenPos = ((obs.y + this.roadScrollOffset * 1.5) % 220) - 60;
+    if (sheenPos > -hh + 25 && sheenPos < hh - 40) {
+      const sheenGrad = ctx.createLinearGradient(0, sheenPos - 18, 0, sheenPos + 18);
+      sheenGrad.addColorStop(0, 'rgba(255, 255, 255, 0)');
+      sheenGrad.addColorStop(0.5, 'rgba(255, 252, 235, 0.42)');
+      sheenGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = sheenGrad;
+      ctx.fillRect(-roofW / 2 + 4, Math.max(-hh + 38, sheenPos - 16), roofW - 8, 28);
+    }
 
     ctx.strokeStyle = '#D49B00';
     ctx.lineWidth = 2.5;
@@ -2950,6 +3075,7 @@ export class AgberoGameEngine {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(slogan, 0, hh - 52.5);
+    ctx.restore();
 
     ctx.fillStyle = '#1E293B';
     ctx.strokeStyle = '#0D0C10';
@@ -3005,6 +3131,14 @@ export class AgberoGameEngine {
   ) {
     const hw = w / 2;
     const hh = h / 2;
+
+    // Soft Ambient Occlusion Ground Shadow
+    const aoGrad = ctx.createRadialGradient(4, 6, hw * 0.25, 4, 6, Math.max(hw, hh) * 1.1);
+    aoGrad.addColorStop(0, 'rgba(6, 5, 10, 0.82)');
+    aoGrad.addColorStop(0.7, 'rgba(6, 5, 10, 0.42)');
+    aoGrad.addColorStop(1, 'rgba(6, 5, 10, 0)');
+    ctx.fillStyle = aoGrad;
+    ctx.fillRect(-hw - 14, -hh - 12, w + 28, h + 28);
 
     ctx.fillStyle = 'rgba(13, 12, 16, 0.75)';
     ctx.beginPath();
@@ -3757,6 +3891,161 @@ export class AgberoGameEngine {
       ctx.fillText(lm.title, ROAD_CENTER_X, lm.y);
       ctx.restore();
     }
+  }
+
+  /**
+   * AAA Next-Gen Post-Processing Lighting & Shader Pass:
+   * - Additive ('screen') HDR Bloom for vehicle brake lights, anamorphic horizontal lens flares,
+   *   overhead sodium-vapor / neon streetlight pools sweeping across bus roofs and asphalt,
+   *   player headlight bloom, and atmospheric horizon depth haze + edge vignette.
+   */
+  private drawPostProcessingLightingPass(
+    ctx: CanvasRenderingContext2D,
+    visibleLeft: number,
+    visibleTop: number,
+    visibleW: number,
+    visibleH: number
+  ) {
+    const stageMod = (this.stageIndex - 1) % 3;
+    const isBoosting =
+      this.boosterTimeRemaining > 0 || this.player.slipstreamBoostTimer > 0;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+
+    // 1. Volumetric Overhead Streetlight Pools & Anamorphic Lens Flares along Left/Right Barriers
+    const poleSpacing = 240;
+    const offset = this.asphaltGrainOffset;
+    const lampColorInner =
+      stageMod === 1
+        ? 'rgba(0, 245, 212, 0.22)'
+        : stageMod === 2
+        ? 'rgba(56, 189, 248, 0.20)'
+        : 'rgba(255, 180, 40, 0.22)';
+    const flareColor =
+      stageMod === 1 ? 'rgba(0, 245, 212, 0.45)' : 'rgba(255, 210, 90, 0.45)';
+
+    for (let y = -600 - poleSpacing + offset; y < LOGICAL_HEIGHT + 600; y += poleSpacing) {
+      // Left Streetlamp Light Pool onto Left Lane
+      const leftPool = ctx.createRadialGradient(
+        ROAD_LEFT - 15,
+        y + 25,
+        8,
+        ROAD_LEFT + 45,
+        y + 45,
+        175
+      );
+      leftPool.addColorStop(0, lampColorInner);
+      leftPool.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = leftPool;
+      ctx.fillRect(ROAD_LEFT - 140, y - 120, 340, 320);
+
+      // Left Anamorphic Horizontal Lens Flare Streak
+      ctx.fillStyle = flareColor;
+      ctx.fillRect(ROAD_LEFT - 85, y + 23, 95, 2.5);
+
+      // Right Streetlamp Light Pool onto Right Lane
+      const rightPool = ctx.createRadialGradient(
+        ROAD_RIGHT + 15,
+        y + 65,
+        8,
+        ROAD_RIGHT - 45,
+        y + 85,
+        175
+      );
+      rightPool.addColorStop(0, lampColorInner);
+      rightPool.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = rightPool;
+      ctx.fillRect(ROAD_RIGHT - 200, y - 80, 340, 320);
+
+      // Right Anamorphic Horizontal Lens Flare Streak
+      ctx.fillStyle = flareColor;
+      ctx.fillRect(ROAD_RIGHT - 10, y + 63, 95, 2.5);
+    }
+
+    // 2. Additive HDR Brake-Light & Turn-Signal Bloom Halos on Traffic Vehicles
+    for (const obs of this.obstacles) {
+      if (obs.type === 'BARRICADE') continue;
+      const hw = obs.width / 2;
+      const hh = obs.height / 2;
+
+      for (const lx of [obs.x - hw + 16, obs.x + hw - 16]) {
+        const ly = obs.y + hh - 4;
+        const tailBloom = ctx.createRadialGradient(lx, ly, 2, lx, ly + 8, 44);
+        tailBloom.addColorStop(0, 'rgba(255, 60, 60, 0.52)');
+        tailBloom.addColorStop(0.45, 'rgba(255, 30, 30, 0.18)');
+        tailBloom.addColorStop(1, 'rgba(255, 0, 0, 0)');
+        ctx.fillStyle = tailBloom;
+        ctx.fillRect(lx - 44, ly - 36, 88, 88);
+
+        // Anamorphic horizontal crimson brake flare
+        ctx.fillStyle = 'rgba(255, 90, 90, 0.38)';
+        ctx.fillRect(lx - 26, ly - 1, 52, 2);
+      }
+    }
+
+    // 3. Player Okada Headlight & Tail-Light HDR Bloom
+    const px = this.player.x;
+    const py = this.player.y;
+    const playerBloom = ctx.createRadialGradient(
+      px,
+      py - 30,
+      10,
+      px,
+      py - 60,
+      isBoosting ? 185 : 135
+    );
+    playerBloom.addColorStop(
+      0,
+      isBoosting ? 'rgba(0, 245, 212, 0.36)' : 'rgba(255, 215, 90, 0.24)'
+    );
+    playerBloom.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = playerBloom;
+    ctx.fillRect(px - 190, py - 240, 380, 320);
+
+    // 4. Top Horizon Atmospheric Sunset / Neon Haze & Sun-Shaft God-Rays
+    const horizonGrad = ctx.createLinearGradient(
+      0,
+      visibleTop,
+      0,
+      visibleTop + visibleH * 0.34
+    );
+    if (stageMod === 0) {
+      horizonGrad.addColorStop(0, 'rgba(255, 145, 30, 0.30)');
+      horizonGrad.addColorStop(0.5, 'rgba(255, 90, 20, 0.10)');
+      horizonGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    } else if (stageMod === 1) {
+      horizonGrad.addColorStop(0, 'rgba(140, 50, 255, 0.28)');
+      horizonGrad.addColorStop(0.5, 'rgba(0, 245, 212, 0.09)');
+      horizonGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    } else {
+      horizonGrad.addColorStop(0, 'rgba(56, 189, 248, 0.24)');
+      horizonGrad.addColorStop(0.5, 'rgba(30, 64, 175, 0.10)');
+      horizonGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    }
+    ctx.fillStyle = horizonGrad;
+    ctx.fillRect(visibleLeft - 40, visibleTop - 20, visibleW + 80, visibleH * 0.36);
+
+    ctx.restore();
+
+    // 5. Cinematic Camera Lens Edge Vignette (Darkens outer screen edges so the center highway pops in 3D)
+    ctx.save();
+    const centerX = visibleLeft + visibleW / 2;
+    const centerY = visibleTop + visibleH / 2;
+    const outerRadius = Math.hypot(visibleW, visibleH) * 0.56;
+    const vignette = ctx.createRadialGradient(
+      centerX,
+      centerY,
+      outerRadius * 0.52,
+      centerX,
+      centerY,
+      outerRadius
+    );
+    vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vignette.addColorStop(1, 'rgba(6, 5, 11, 0.58)');
+    ctx.fillStyle = vignette;
+    ctx.fillRect(visibleLeft - 40, visibleTop - 40, visibleW + 80, visibleH + 80);
+    ctx.restore();
   }
 
   private drawRainWeather(ctx: CanvasRenderingContext2D) {
