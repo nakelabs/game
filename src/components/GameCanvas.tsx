@@ -50,6 +50,8 @@ const INITIAL_HUD: GameHUDData = {
   boosterTimeRemaining: 0,
   magnetTimeRemaining: 0,
   isNewRecord: false,
+  canRevive: false,
+  reviveCost: 150,
   isGameOver: false,
   isVictory: false,
 };
@@ -309,6 +311,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     }
   };
 
+  const handleReviveRun = () => {
+    if (!engineRef.current) return;
+    const revived = engineRef.current.reviveRun();
+    if (revived) {
+      setShowFailureModal(false);
+      lastFrameTimeRef.current = performance.now();
+    }
+  };
+
   const handleRewatchIntroClick = () => {
     setShowFailureModal(false);
     setIsGarageOpen(false);
@@ -535,6 +546,17 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
             {/* Action Buttons */}
             <div className="flex flex-col gap-2.5">
+              {hud.canRevive && (
+                <button
+                  type="button"
+                  onClick={handleReviveRun}
+                  className="w-full py-3.5 px-5 bg-[#00F5D4] hover:bg-[#33F7DD] active:scale-[0.99] text-[#0D0C10] font-black text-sm sm:text-base uppercase tracking-wider rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg border-2 border-[#0D0C10]"
+                >
+                  <Shield className="w-4 h-4 sm:w-5 sm:h-5 fill-current" />
+                  <span>SETTLE LASTMA & CONTINUE (-₦{hud.reviveCost})</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={handleRetryRun}

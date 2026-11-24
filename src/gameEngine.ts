@@ -604,14 +604,18 @@ export class AgberoGameEngine {
   private lastOpenLane: LaneIndex = 1;
   public gracePeriodSeconds = 1.5;
 
-  // Crash & Shake states
+  // Crash, Revive & Shake states
   public isGameOver = false;
   public isVictory = false;
+  public hasRevivedThisRun = false;
+  public readonly reviveCost = 150;
   public shakeTimeRemaining = 0;
   public shakeIntensity = 0;
   public crashFlashAlpha = 0;
   public impactX = 0;
   public impactY = 0;
+  public roadCurve = 0; // Smooth -1..1 horizontal 3D highway bend
+  public roadCrest = 0; // Smooth -1..1 vertical 3D bridge arch/elevation
 
   private assets: LoadedAssets = {
     playerBike: null,
@@ -834,10 +838,63 @@ export class AgberoGameEngine {
     this.lastOpenLane = 1;
     this.isGameOver = false;
     this.isVictory = false;
+    this.hasRevivedThisRun = false;
+    this.roadCurve = 0;
+    this.roadCrest = 0;
     this.shakeTimeRemaining = 0;
     this.shakeIntensity = 0;
     this.crashFlashAlpha = 0;
     this.syncHUD(true);
+  }
+
+  /**
+   * 4. Second-Chance "Oga Settle!" Revive Mechanic
+   * Allows the player to pay ₦150 once per run from their current earnings (or wallet) to bribe LASTMA / repair
+   * the bike, blast away all surrounding traffic, activate a 4-second Juju Shield, and continue the run!
+   */
+  public reviveRun(): boolean {
+    if (!this.isGameOver || this.hasRevivedThisRun) return false;
+
+    const totalAvailable = Math.round(this.cashEarned) + this.saveData.walletNaira;
+    if (totalAvailable < this.reviveCost) return false;
+
+    // Deduct ₦150 from run earnings first (and wallet if needed); note triggerCollision already banked finalCash
+    this.saveData.walletNaira = Math.max(0, this.saveData.walletNaira - Math.round(this.cashEarned));
+    if (this.cashEarned >= this.reviveCost) {
+      this.cashEarned -= this.reviveCost;
+    } else {
+      const remainder = this.reviveCost - Math.round(this.cashEarned);
+      this.cashEarned = 0;
+      this.saveData.walletNaira = Math.max(0, this.saveData.walletNaira - remainder);
+    }
+    savePlayerSave(this.saveData);
+
+    this.hasRevivedThisRun = true;
+    this.isGameOver = false;
+    this.player.isWheelie = false;
+    this.player.wobbleTimer = 0;
+
+    // Clear all nearby obstacles & hazards and grant a 4.0s Agbero Juju Shield + Horn Shockwave
+    this.obstacles = this.obstacles.filter((o) => o.y < -180);
+    this.hazards = [];
+    this.vipConvoy.active = false;
+    this.hasShield = true;
+    this.shieldTimeRemaining = Math.max(this.shieldTimeRemaining, 4.0);
+    this.hornCharge = 100;
+    this.hornShockwaveRadius = 24;
+    this.hornShockwaveAlpha = 1.0;
+
+    soundFX.playPowerUp('SHIELD');
+    this.callouts.push({
+      id: this.nextCalloutId++,
+      text: 'OGA SETTLED! CLEAR ROAD! SHIELD ACTIVE!',
+      x: ROAD_CENTER_X,
+      y: this.player.y - 95,
+      color: '#00F5D4',
+      life: 1.45,
+    });
+    this.syncHUD(true);
+    return true;
   }
 
   public moveLane(direction: -1 | 1) {
@@ -1080,6 +1137,19 @@ export class AgberoGameEngine {
     this.cameraParallaxX += (targetParallaxX - this.cameraParallaxX) * Math.min(1, 6.5 * safeDt);
 
     this.cameraBankAngle = 0;
+
+    // 2. Smooth 3D Highway Curvature & Bridge Arch Elevation (Gradual bends & rises over 3rd Mainland spans)
+    if (isActive && this.distanceTraveled > 80) {
+      const d = this.distanceTraveled;
+      const targetCurve =
+        Math.sin(d * 0.0022) * 0.65 + Math.sin(d * 0.0051) * 0.35;
+      const targetCrest = Math.sin(d * 0.0034) * 0.85;
+      this.roadCurve += (targetCurve - this.roadCurve) * Math.min(1, 2.2 * safeDt);
+      this.roadCrest += (targetCrest - this.roadCrest) * Math.min(1, 2.2 * safeDt);
+    } else {
+      this.roadCurve += (0 - this.roadCurve) * Math.min(1, 3.0 * safeDt);
+      this.roadCrest += (0 - this.roadCrest) * Math.min(1, 3.0 * safeDt);
+    }
 
     if (isActive) {
       const metersDelta = frameScroll * 0.055;
@@ -2286,6 +2356,11 @@ export class AgberoGameEngine {
       boosterTimeRemaining: Number(this.boosterTimeRemaining.toFixed(1)),
       magnetTimeRemaining: Number(this.magnetTimeRemaining.toFixed(1)),
       isNewRecord: this.isNewRecord,
+      canRevive:
+        this.isGameOver &&
+        !this.hasRevivedThisRun &&
+        Math.round(this.cashEarned) + this.saveData.walletNaira >= this.reviveCost,
+      reviveCost: this.reviveCost,
       isGameOver: this.isGameOver,
       isVictory: this.isVictory,
     });
@@ -2297,7 +2372,8 @@ export class AgberoGameEngine {
 
   /**
    * Projects a 2D logical highway coordinate (worldX, worldY) into 3D Behind-the-Bike Camera Space:
-   * - Fixed, steady vanishing point at ROAD_CENTER_X prevents background/skyline dizziness when switching lanes.
+   * - Includes smooth 3D Highway Curvature (roadCurve) and Bridge Arch Elevation (roadCrest) that bend
+   *   and crest the highway toward the horizon while keeping the foreground player lane at 0 offset!
    * - Horizon line sits at y = 218 (top 30% of screen is the 3D Lagos Island Skyline, Sunset & Bridge Towers).
    * - Camera sits behind the player's Okada at y = 562 (scale = 1.0).
    */
@@ -2318,10 +2394,15 @@ export class AgberoGameEngine {
     // Smooth perspective foreshortening curve so distant traffic approaches naturally from the horizon
     const perspT = Math.pow(clampedT, 1.38);
     const scale = 0.22 + 0.78 * perspT;
-    const screenY = HORIZON_Y + (PLAYER_REF_Y - HORIZON_Y) * perspT;
 
-    // Fixed vanishing point at ROAD_CENTER_X keeps the 3D road and horizon rock-steady on the eyes
-    const screenX = ROAD_CENTER_X + (worldX - ROAD_CENTER_X) * scale;
+    // Distance factor ahead of the player bike (0 at player bike, 1.0 at horizon)
+    const distAhead = Math.max(0, 1 - Math.min(1, clampedT));
+    // Smooth quadratic road bend & bridge arch crest
+    const curveOffsetX = this.roadCurve * 105 * Math.pow(distAhead, 1.85);
+    const crestOffsetY = -this.roadCrest * 22 * Math.sin(distAhead * Math.PI);
+
+    const screenY = HORIZON_Y + (PLAYER_REF_Y - HORIZON_Y) * perspT + crestOffsetY;
+    const screenX = ROAD_CENTER_X + curveOffsetX + (worldX - ROAD_CENTER_X) * scale;
 
     return { x: screenX, y: screenY, scale, depthT: clampedT };
   }
@@ -2441,7 +2522,7 @@ export class AgberoGameEngine {
   ) {
     const HORIZON_Y = 218;
     const stageMod = (this.stageIndex - 1) % 3;
-    const vanishX = ROAD_CENTER_X;
+    const vanishX = ROAD_CENTER_X + this.roadCurve * 105;
 
     // Sky Gradient above Horizon
     const skyGrad = ctx.createLinearGradient(0, Math.min(0, top), 0, HORIZON_Y);
@@ -2584,59 +2665,54 @@ export class AgberoGameEngine {
   }
 
   /**
-   * 2. Renders the 3D Perspective Trapezoid Highway, Concrete Barriers, Rumble Strips,
-   * Lane Dividers, Bridge Expansion Joints & 3D Streetlight Poles receding to the Vanishing Point.
+   * 2. Renders the 3D Perspective Segmented Highway, Concrete Barriers, Rumble Strips,
+   * Lane Dividers, Bridge Expansion Joints & 3D Streetlight Poles curving & arching to the Vanishing Point.
    */
   private draw3DExpressway(ctx: CanvasRenderingContext2D) {
     const FAR_Y = -480;
     const NEAR_Y = 920;
 
-    const pFarLeft = this.project3D(ROAD_LEFT, FAR_Y);
-    const pFarRight = this.project3D(ROAD_RIGHT, FAR_Y);
-    const pNearLeft = this.project3D(ROAD_LEFT, NEAR_Y);
-    const pNearRight = this.project3D(ROAD_RIGHT, NEAR_Y);
+    // 1 & 2. Render Segmented 3D Curved & Arched Bridge Apron + Asphalt Road Deck
+    const deckStep = 70;
+    for (let wy = FAR_Y; wy < NEAR_Y; wy += deckStep) {
+      const wyNext = Math.min(NEAR_Y, wy + deckStep + 2);
+      const pFL = this.project3D(ROAD_LEFT, wy);
+      const pFR = this.project3D(ROAD_RIGHT, wy);
+      const pNL = this.project3D(ROAD_LEFT, wyNext);
+      const pNR = this.project3D(ROAD_RIGHT, wyNext);
 
-    // 1. Bridge Concrete Under-Deck Apron
-    ctx.fillStyle = '#14121B';
-    ctx.beginPath();
-    ctx.moveTo(pFarLeft.x - 42 * pFarLeft.scale, pFarLeft.y);
-    ctx.lineTo(pFarRight.x + 42 * pFarRight.scale, pFarRight.y);
-    ctx.lineTo(pNearRight.x + 42 * pNearRight.scale, pNearRight.y);
-    ctx.lineTo(pNearLeft.x - 42 * pNearLeft.scale, pNearLeft.y);
-    ctx.closePath();
-    ctx.fill();
-
-    // 2. Main 3D Perspective Asphalt Trapezoid
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(pFarLeft.x, pFarLeft.y);
-    ctx.lineTo(pFarRight.x, pFarRight.y);
-    ctx.lineTo(pNearRight.x, pNearRight.y);
-    ctx.lineTo(pNearLeft.x, pNearLeft.y);
-    ctx.closePath();
-
-    const asphaltGrad = ctx.createLinearGradient(0, pFarLeft.y, 0, pNearLeft.y);
-    asphaltGrad.addColorStop(0, '#16131F');
-    asphaltGrad.addColorStop(0.35, '#252130');
-    asphaltGrad.addColorStop(1, '#1E1B26');
-    ctx.fillStyle = asphaltGrad;
-    ctx.fill();
-
-    // Clip lane tire ruts & bridge expansion joints inside the 3D road trapezoid
-    ctx.clip();
-
-    // 3D Perspective Lane Center Specular Sun-Sheen & Tire-Wear Ruts
-    for (let lane = 0; lane < 3; lane++) {
-      const laneX = LANE_CENTERS[lane];
-      const pLaneFar = this.project3D(laneX, FAR_Y);
-      const pLaneNear = this.project3D(laneX, NEAR_Y);
-
-      ctx.strokeStyle = 'rgba(255, 190, 60, 0.05)';
-      ctx.lineWidth = 38;
+      // Bridge Concrete Under-Deck Apron Slice
+      ctx.fillStyle = '#14121B';
       ctx.beginPath();
-      ctx.moveTo(pLaneFar.x, pLaneFar.y);
-      ctx.lineTo(pLaneNear.x, pLaneNear.y);
-      ctx.stroke();
+      ctx.moveTo(pFL.x - 42 * pFL.scale, pFL.y);
+      ctx.lineTo(pFR.x + 42 * pFR.scale, pFR.y);
+      ctx.lineTo(pNR.x + 42 * pNR.scale, pNR.y);
+      ctx.lineTo(pNL.x - 42 * pNL.scale, pNL.y);
+      ctx.closePath();
+      ctx.fill();
+
+      // Main 3D Asphalt Slice
+      ctx.fillStyle = wy < -80 ? '#1C1826' : '#211E2C';
+      ctx.beginPath();
+      ctx.moveTo(pFL.x, pFL.y);
+      ctx.lineTo(pFR.x, pFR.y);
+      ctx.lineTo(pNR.x, pNR.y);
+      ctx.lineTo(pNL.x, pNL.y);
+      ctx.closePath();
+      ctx.fill();
+
+      // Subtle 3D Lane Center Tire-Polish Sheen following the 3D curve
+      for (let lane = 0; lane < 3; lane++) {
+        const laneX = LANE_CENTERS[lane];
+        const pL1 = this.project3D(laneX, wy);
+        const pL2 = this.project3D(laneX, wyNext);
+        ctx.strokeStyle = 'rgba(255, 190, 60, 0.045)';
+        ctx.lineWidth = Math.max(6, 36 * pL2.scale);
+        ctx.beginPath();
+        ctx.moveTo(pL1.x, pL1.y);
+        ctx.lineTo(pL2.x, pL2.y);
+        ctx.stroke();
+      }
     }
 
     // Horizontal 3rd Mainland Bridge Expansion Joints scrolling smoothly in 3D perspective
@@ -2652,7 +2728,6 @@ export class AgberoGameEngine {
       ctx.lineTo(pR.x, pR.y);
       ctx.stroke();
     }
-    ctx.restore();
 
     // 3. 3D Perspective Yellow & Black Hazard Rumble Strips + Concrete Jersey Barriers
     const segWorldLen = 110;
@@ -3115,7 +3190,7 @@ export class AgberoGameEngine {
       if (this.assets.keke) {
         ctx.drawImage(this.assets.keke, -obs.width / 2, -obs.height / 2, obs.width, obs.height);
       } else {
-        this.drawFallbackKeke(ctx, obs.width, obs.height, obs.label || 'EXPRESS');
+        this.drawFallbackKeke(ctx, obs.width, obs.height, obs.label || 'EXPRESS', obs);
       }
     } else {
       if (this.assets.barricade) {
@@ -3134,6 +3209,13 @@ export class AgberoGameEngine {
     ctx.restore();
   }
 
+  /**
+   * 1A. True 3D Rear-Chase Elevation Lagos Danfo Bus Model:
+   * - Tall 3D rear vertical doors facing the player camera, rear window with passenger silhouettes,
+   *   perspective side wall with open sliding door & Agbero conductor when in Left/Right lane,
+   *   roof luggage rack with spare tire & market sacks, rear bumper stickers ("NO PADDY FOR JUNGLE"),
+   *   and glowing 3D brake lights + turn-signal blinkers.
+   */
   private drawFallbackDanfo(
     ctx: CanvasRenderingContext2D,
     w: number,
@@ -3144,230 +3226,222 @@ export class AgberoGameEngine {
     const hw = w / 2;
     const hh = h / 2;
 
-    // 2.5D Perspective Parallax Extrusion:
-    // Calculate horizontal offset from the camera centerline so you see the 3D right passenger doors
-    // when the Danfo is in the Left Lane, and the 3D left driver side when in the Right Lane!
+    // 3D Lateral Perspective Extrusion based on lane offset from camera centerline
     const cameraCenterX = ROAD_CENTER_X - this.cameraParallaxX * 1.5;
-    const perspX = Math.max(-16, Math.min(16, ((cameraCenterX - obs.x) / LANE_WIDTH) * 11));
-    const perspY = -7;
+    const perspX = Math.max(-22, Math.min(22, ((cameraCenterX - obs.x) / LANE_WIDTH) * 16));
 
-    // Soft Ambient Occlusion Ground Shadow + Hard Directional Shadow
-    const aoGrad = ctx.createRadialGradient(5, 8, hw * 0.3, 5, 8, Math.max(hw, hh) * 1.15);
-    aoGrad.addColorStop(0, 'rgba(6, 5, 10, 0.85)');
-    aoGrad.addColorStop(0.7, 'rgba(6, 5, 10, 0.45)');
-    aoGrad.addColorStop(1, 'rgba(6, 5, 10, 0)');
-    ctx.fillStyle = aoGrad;
-    ctx.fillRect(-hw - 18, -hh - 14, w + 36, h + 36);
+    // 1. Soft 3D Ground Shadow Under Tires & Chassis
+    ctx.fillStyle = 'rgba(6, 5, 10, 0.82)';
+    this.fillRoundedRect(ctx, -hw - 6, -hh + 18, w + 12, h - 4, 16);
 
-    ctx.fillStyle = 'rgba(10, 9, 14, 0.72)';
-    this.fillRoundedRect(ctx, -hw + 11, -hh + 14, w, h, 15);
+    // 2. Dual Rear Rubber Tires & Mudflaps Under Rear Bumper
+    ctx.fillStyle = '#111016';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3.5;
+    this.fillRoundedRect(ctx, -hw + 4, hh - 16, 18, 26, 4);
+    this.strokeRoundedRect(ctx, -hw + 4, hh - 16, 18, 26, 4);
+    this.fillRoundedRect(ctx, hw - 22, hh - 16, 18, 26, 4);
+    this.strokeRoundedRect(ctx, hw - 22, hh - 16, 18, 26, 4);
 
-    // 2.5D 3D Extruded Side-Wall Chassis & Passenger Windows (Visible on Left or Right side depending on lane!)
+    // 3. 3D Perspective Side Wall (Visible when Danfo is to the Left or Right of the Camera)
     if (Math.abs(perspX) > 2.5) {
-      const sideX = perspX > 0 ? hw - 8 : -hw - Math.abs(perspX);
-      const sideW = Math.abs(perspX) + 8;
-      ctx.fillStyle = '#B87D00';
+      const isRightSideVisible = perspX > 0;
+      const sideX = isRightSideVisible ? hw - 4 : -hw - Math.abs(perspX);
+      const sideW = Math.abs(perspX) + 4;
+
+      ctx.fillStyle = '#C98A00';
       ctx.strokeStyle = '#0D0C10';
       ctx.lineWidth = 4;
-      this.fillRoundedRect(ctx, sideX, -hh + 6, sideW, h - 12, 8);
-      this.strokeRoundedRect(ctx, sideX, -hh + 6, sideW, h - 12, 8);
+      this.fillRoundedRect(ctx, sideX, -hh + 10, sideW, h - 18, 8);
+      this.strokeRoundedRect(ctx, sideX, -hh + 10, sideW, h - 18, 8);
 
-      // 3D Side Passenger Windows along extruded wall
+      // Black waist stripe along 3D side wall
+      ctx.fillStyle = '#0D0C10';
+      ctx.fillRect(sideX, 8, sideW, 14);
+
+      // 3D Side Passenger Windows
       ctx.fillStyle = '#0F172A';
-      for (let swy = -hh + 26; swy < hh - 38; swy += 28) {
-        ctx.fillRect(
-          perspX > 0 ? hw - 2 : -hw - Math.abs(perspX) + 3,
-          swy,
-          Math.max(4, Math.abs(perspX) - 3),
-          18
-        );
+      const winX = isRightSideVisible ? hw : -hw - Math.abs(perspX) + 3;
+      const winW = Math.max(4, Math.abs(perspX) - 4);
+      ctx.fillRect(winX, -hh + 28, winW, 24);
+      ctx.fillRect(winX, -hh + 60, winW, 26);
+
+      // Iconic Lagos Danfo Conductor ("Agbero") leaning out of the right passenger door!
+      if (isRightSideVisible && perspX > 6) {
+        ctx.fillStyle = '#FF2E2E';
+        ctx.strokeStyle = '#0D0C10';
+        ctx.lineWidth = 3;
+        this.fillRoundedRect(ctx, hw + 2, -6, 11, 24, 4);
+        this.strokeRoundedRect(ctx, hw + 2, -6, 11, 24, 4);
+        ctx.fillStyle = '#FFCC00';
+        ctx.beginPath();
+        ctx.arc(hw + 8, -12, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
       }
     }
 
-    ctx.fillStyle = '#14131A';
+    // 4. Foreshortened 3D Top Roof & Stacked Roof Luggage Rack (Top 28% of vehicle)
+    const roofTopY = -hh;
+    const roofBottomY = -hh + 52;
+    const roofGrad = ctx.createLinearGradient(-hw, roofTopY, hw, roofBottomY);
+    roofGrad.addColorStop(0, '#FFE47A');
+    roofGrad.addColorStop(1, '#F2B200');
+    ctx.fillStyle = roofGrad;
     ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 3.5;
-    for (const ty of [-hh + 26, hh - 46]) {
-      this.fillRoundedRect(ctx, -hw - 5, ty, 8, 26, 3);
-      this.strokeRoundedRect(ctx, -hw - 5, ty, 8, 26, 3);
-      this.fillRoundedRect(ctx, hw - 3, ty, 8, 26, 3);
-      this.strokeRoundedRect(ctx, hw - 3, ty, 8, 26, 3);
-    }
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(-hw + 12, roofTopY);
+    ctx.lineTo(hw - 12, roofTopY);
+    ctx.lineTo(hw - 2, roofBottomY);
+    ctx.lineTo(-hw + 2, roofBottomY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
 
-    ctx.fillStyle = '#0D0C10';
-    ctx.fillRect(-hw - 10, -hh + 20, 10, 4);
-    ctx.fillRect(hw, -hh + 20, 10, 4);
-    ctx.fillStyle = '#FFCC00';
-    ctx.strokeStyle = '#0D0C10';
+    // Roof Cargo Rack with Spare Tire & Blue Market Sack
+    ctx.strokeStyle = '#1E1D24';
     ctx.lineWidth = 3;
-    ctx.fillRect(-hw - 12, -hh + 16, 6, 13);
-    ctx.strokeRect(-hw - 12, -hh + 16, 6, 13);
-    ctx.fillRect(hw + 6, -hh + 16, 6, 13);
-    ctx.strokeRect(hw + 6, -hh + 16, 6, 13);
+    ctx.strokeRect(-hw + 16, roofTopY + 8, w - 32, 34);
 
-    const bodyGrad = ctx.createLinearGradient(-hw, 0, hw, 0);
+    ctx.fillStyle = '#2563EB';
+    ctx.strokeStyle = '#0D0C10';
+    this.fillRoundedRect(ctx, -24, roofTopY + 12, 22, 22, 4);
+    this.strokeRoundedRect(ctx, -24, roofTopY + 12, 22, 22, 4);
+
+    ctx.fillStyle = '#18181F';
+    ctx.beginPath();
+    ctx.ellipse(12, roofTopY + 24, 14, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 5. Tall 3D Rear Vertical Bus Body Facing Camera
+    const rearTopY = -hh + 44;
+    const rearH = h - 46;
+    const bodyGrad = ctx.createLinearGradient(-hw, rearTopY, hw, rearTopY);
     bodyGrad.addColorStop(0, '#FFD633');
     bodyGrad.addColorStop(0.5, '#FFCC00');
-    bodyGrad.addColorStop(0.85, '#E6A800');
-    bodyGrad.addColorStop(1, '#CC8800');
+    bodyGrad.addColorStop(1, '#D49200');
 
     ctx.fillStyle = bodyGrad;
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 5.5;
-    this.fillRoundedRect(ctx, -hw, -hh, w, h, 14);
-    this.strokeRoundedRect(ctx, -hw, -hh, w, h, 14);
+    this.fillRoundedRect(ctx, -hw, rearTopY, w, rearH, 12);
+    this.strokeRoundedRect(ctx, -hw, rearTopY, w, rearH, 12);
 
-    // Left specular cel-highlight strip
-    ctx.fillStyle = 'rgba(255, 250, 210, 0.55)';
-    ctx.fillRect(-hw + 6, -hh + 14, 5, h - 28);
+    // Center Vertical Rear Double-Door Seam & Hinges
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(0, rearTopY + 22);
+    ctx.lineTo(0, hh - 20);
+    ctx.stroke();
 
-    // Spider-Verse Style Comic Halftone Dot Shading along right shadow edge
-    ctx.fillStyle = 'rgba(13, 12, 16, 0.25)';
-    for (let hy = -hh + 24; hy < hh - 24; hy += 12) {
-      ctx.beginPath();
-      ctx.arc(hw - 16, hy, 2.2, 0, Math.PI * 2);
-      ctx.arc(hw - 22, hy + 6, 1.6, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
+    // Top Black & Yellow Route Header Board ("VI - LEKKI", "CMS - OBALENDE")
     ctx.fillStyle = '#0D0C10';
-    ctx.fillRect(-hw + 3, -hh + 18, 9, h - 36);
-    ctx.fillRect(hw - 12, -hh + 18, 9, h - 36);
+    this.fillRoundedRect(ctx, -hw + 8, rearTopY + 5, w - 16, 18, 4);
+    ctx.fillStyle = '#FFCC00';
+    ctx.font = '900 9.5px "Inter", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(slogan, 0, rearTopY + 14.5);
 
-    ctx.fillStyle = '#38BDF8';
-    for (let wy = -hh + 40; wy < hh - 46; wy += 24) {
-      ctx.fillRect(-hw + 5, wy, 5, 16);
-      ctx.fillRect(hw - 10, wy, 5, 16);
-    }
-
+    // 6. 3D Rear Split Glass Window with Passenger Silhouettes & Glare
+    const winY = rearTopY + 27;
+    const winH = 38;
     ctx.fillStyle = '#0F172A';
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 4;
-    this.fillRoundedRect(ctx, -hw + 12, -hh + 8, w - 24, 25, 6);
-    this.strokeRoundedRect(ctx, -hw + 12, -hh + 8, w - 24, 25, 6);
+    this.fillRoundedRect(ctx, -hw + 10, winY, w / 2 - 13, winH, 5);
+    this.strokeRoundedRect(ctx, -hw + 10, winY, w / 2 - 13, winH, 5);
+    this.fillRoundedRect(ctx, 3, winY, w / 2 - 13, winH, 5);
+    this.strokeRoundedRect(ctx, 3, winY, w / 2 - 13, winH, 5);
 
-    ctx.fillStyle = '#16A34A';
-    ctx.fillRect(-hw + 15, -hh + 10, w - 30, 5);
-
-    ctx.fillStyle = '#38BDF8';
+    // Silhouettes of Danfo passengers seen through rear window
+    ctx.fillStyle = '#1E293B';
     ctx.beginPath();
-    ctx.moveTo(-hw + 18, -hh + 14);
-    ctx.lineTo(-hw + 38, -hh + 14);
-    ctx.lineTo(-hw + 26, -hh + 31);
-    ctx.lineTo(-hw + 14, -hh + 31);
+    ctx.arc(-22, winY + 18, 8, 0, Math.PI * 2);
+    ctx.arc(20, winY + 18, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(-32, winY + 25, 20, 11);
+    ctx.fillRect(10, winY + 25, 20, 11);
+
+    // Diagonal sky reflection streak on rear glass
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.35)';
+    ctx.beginPath();
+    ctx.moveTo(-hw + 14, winY + 3);
+    ctx.lineTo(-hw + 26, winY + 3);
+    ctx.lineTo(-hw + 18, winY + winH - 3);
+    ctx.lineTo(-hw + 12, winY + winH - 3);
     ctx.closePath();
     ctx.fill();
 
-    const roofW = w - 26;
-    const roofH = h - 78;
-    const roofShiftX = perspX * 0.45;
-    const roofShiftY = perspY * 0.45;
-    ctx.save();
-    ctx.translate(roofShiftX, roofShiftY);
-
-    ctx.fillStyle = '#FFE159';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 4;
-    this.fillRoundedRect(ctx, -roofW / 2, -hh + 36, roofW, roofH, 8);
-    this.strokeRoundedRect(ctx, -roofW / 2, -hh + 36, roofW, roofH, 8);
-
-    // Dynamic Moving Clear-Coat Roof Specular Reflection Band (Simulates passing overhead streetlamps!)
-    const sheenPos = ((obs.y + this.roadScrollOffset * 1.5) % 220) - 60;
-    if (sheenPos > -hh + 25 && sheenPos < hh - 40) {
-      const sheenGrad = ctx.createLinearGradient(0, sheenPos - 18, 0, sheenPos + 18);
-      sheenGrad.addColorStop(0, 'rgba(255, 255, 255, 0)');
-      sheenGrad.addColorStop(0.5, 'rgba(255, 252, 235, 0.42)');
-      sheenGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
-      ctx.fillStyle = sheenGrad;
-      ctx.fillRect(-roofW / 2 + 4, Math.max(-hh + 38, sheenPos - 16), roofW - 8, 28);
-    }
-
-    ctx.strokeStyle = '#D49B00';
-    ctx.lineWidth = 2.5;
-    for (let ry = -hh + 48; ry < -hh + 36 + roofH - 12; ry += 14) {
-      ctx.beginPath();
-      ctx.moveTo(-roofW / 2 + 6, ry);
-      ctx.lineTo(roofW / 2 - 6, ry);
-      ctx.stroke();
-    }
-
-    const rackW = roofW - 12;
-    const rackH = 54;
-    const rackY = -hh + 44;
-    ctx.strokeStyle = '#1E1D24';
-    ctx.lineWidth = 3.5;
-    ctx.strokeRect(-rackW / 2, rackY, rackW, rackH);
-
-    ctx.fillStyle = '#18181F';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 3.5;
-    ctx.beginPath();
-    ctx.arc(-10, rackY + 24, 15, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = '#94A3B8';
-    ctx.beginPath();
-    ctx.arc(-10, rackY + 24, 6, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = '#2563EB';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 3;
-    this.fillRoundedRect(ctx, 6, rackY + 10, 18, 26, 4);
-    this.strokeRoundedRect(ctx, 6, rackY + 10, 18, 26, 4);
-
-    ctx.strokeStyle = '#FF2E2E';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(-rackW / 2, rackY + 8);
-    ctx.lineTo(rackW / 2, rackY + rackH - 8);
-    ctx.moveTo(rackW / 2, rackY + 8);
-    ctx.lineTo(-rackW / 2, rackY + rackH - 8);
-    ctx.stroke();
-
+    // 7. Classic Lagos Black & Red Waist Stripes & Rear Bumper Sticker
+    const waistY = winY + winH + 7;
     ctx.fillStyle = '#0D0C10';
-    ctx.fillRect(-roofW / 2 + 3, hh - 62, roofW - 6, 19);
-    ctx.fillStyle = '#FFCC00';
-    ctx.font = '900 10px "Inter", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(slogan, 0, hh - 52.5);
-    ctx.restore();
-
-    ctx.fillStyle = '#1E293B';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 3;
-    this.fillRoundedRect(ctx, -hw + 14, hh - 38, w / 2 - 18, 13, 3);
-    this.strokeRoundedRect(ctx, -hw + 14, hh - 38, w / 2 - 18, 13, 3);
-    this.fillRoundedRect(ctx, 4, hh - 38, w / 2 - 18, 13, 3);
-    this.strokeRoundedRect(ctx, 4, hh - 38, w / 2 - 18, 13, 3);
-
-    ctx.fillStyle = '#0D0C10';
-    ctx.fillRect(-hw + 8, hh - 21, w - 16, 6);
-    ctx.fillRect(-hw + 8, hh - 13, w - 16, 4);
+    ctx.fillRect(-hw + 3, waistY, w - 6, 18);
 
     ctx.fillStyle = '#FF2E2E';
+    ctx.fillRect(-hw + 6, waistY + 18, w - 12, 5);
+
+    // Iconic Danfo Slogan Decal across the black rear beltline
+    ctx.fillStyle = '#FFFDF7';
+    ctx.font = '900 8px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('NO PADDY FOR JUNGLE', 0, waistY + 9.5);
+
+    // 8. 3D Rear Tail-Light Clusters, Amber Blinkers & Nigerian License Plate
+    const lightY = hh - 32;
+    // Left Tail-Light Housing
+    ctx.fillStyle = '#FF2E2E';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3.5;
+    this.fillRoundedRect(ctx, -hw + 6, lightY, 24, 14, 3);
+    this.strokeRoundedRect(ctx, -hw + 6, lightY, 24, 14, 3);
+    ctx.fillStyle = '#FF9500';
+    ctx.fillRect(-hw + 7, lightY + 2, 8, 10);
+
+    // Right Tail-Light Housing
+    ctx.fillStyle = '#FF2E2E';
+    this.fillRoundedRect(ctx, hw - 30, lightY, 24, 14, 3);
+    this.strokeRoundedRect(ctx, hw - 30, lightY, 24, 14, 3);
+    ctx.fillStyle = '#FF9500';
+    ctx.fillRect(hw - 15, lightY + 2, 8, 10);
+
+    // Center Lagos Commercial Yellow/Black Number Plate ("LSR-882X")
+    ctx.fillStyle = '#FFCC00';
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 3;
-    ctx.fillRect(-hw + 7, hh - 9, 22, 8);
-    ctx.strokeRect(-hw + 7, hh - 9, 22, 8);
-    ctx.fillRect(hw - 29, hh - 9, 22, 8);
-    ctx.strokeRect(hw - 29, hh - 9, 22, 8);
+    ctx.fillRect(-16, lightY + 1, 32, 12);
+    ctx.strokeRect(-16, lightY + 1, 32, 12);
+    ctx.fillStyle = '#0D0C10';
+    ctx.fillRect(-12, lightY + 5, 24, 4);
 
-    ctx.fillStyle = '#FF9500';
-    ctx.fillRect(-hw + 7, hh - 9, 7, 8);
-    ctx.fillRect(hw - 14, hh - 9, 7, 8);
+    // 9. Heavy Black & Red Striped Steel Rear Bumper + Exhaust Pipe
+    ctx.fillStyle = '#18171F';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 4;
+    this.fillRoundedRect(ctx, -hw - 2, hh - 15, w + 4, 14, 5);
+    this.strokeRoundedRect(ctx, -hw - 2, hh - 15, w + 4, 14, 5);
+
+    // Red/White reflective chevron hazards on rear bumper
+    ctx.fillStyle = '#FF2E2E';
+    ctx.fillRect(-hw + 8, hh - 11, 16, 6);
+    ctx.fillRect(hw - 24, hh - 11, 16, 6);
+    ctx.fillStyle = '#FFFDF7';
+    ctx.fillRect(-8, hh - 11, 16, 6);
 
     // Flashing Amber Turn-Signal Blinker Warning Arrow when Danfo is about to cut lanes!
     if ((obs.blinkerTimer > 0 || obs.isSwitchingLane) && obs.laneSwitchDirection !== 0) {
       const blinkOn = Math.floor(this.elapsedTime * 14) % 2 === 0;
       if (blinkOn) {
-        const sideX = obs.laneSwitchDirection < 0 ? -hw - 14 : hw + 14;
+        const sideX = obs.laneSwitchDirection < 0 ? -hw - 15 : hw + 15;
         ctx.fillStyle = '#FF9500';
         ctx.strokeStyle = '#0D0C10';
         ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(sideX, hh - 12, 13, 0, Math.PI * 2);
+        ctx.arc(sideX, lightY + 6, 13, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
@@ -3375,127 +3449,143 @@ export class AgberoGameEngine {
         ctx.font = '900 13px "Inter", sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(obs.laneSwitchDirection < 0 ? '◀' : '▶', sideX, hh - 12);
+        ctx.fillText(obs.laneSwitchDirection < 0 ? '◀' : '▶', sideX, lightY + 6);
       }
     }
   }
 
+  /**
+   * 1B. True 3D Rear-Chase Elevation Keke Napep (Yellow Lagos Tricycle) Model:
+   * - Arched black tarpaulin canopy seen from behind, clear rear vinyl window showing driver/passengers,
+   *   yellow steel tailgate with slogan & spare wheel mounted on the back, and wide rear tires.
+   */
   private drawFallbackKeke(
     ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
-    slogan: string
+    slogan: string,
+    obs?: Obstacle
   ) {
     const hw = w / 2;
     const hh = h / 2;
 
-    // Soft Ambient Occlusion Ground Shadow
-    const aoGrad = ctx.createRadialGradient(4, 6, hw * 0.25, 4, 6, Math.max(hw, hh) * 1.1);
-    aoGrad.addColorStop(0, 'rgba(6, 5, 10, 0.82)');
-    aoGrad.addColorStop(0.7, 'rgba(6, 5, 10, 0.42)');
-    aoGrad.addColorStop(1, 'rgba(6, 5, 10, 0)');
-    ctx.fillStyle = aoGrad;
-    ctx.fillRect(-hw - 14, -hh - 12, w + 28, h + 28);
+    const cameraCenterX = ROAD_CENTER_X - this.cameraParallaxX * 1.5;
+    const obsX = obs ? obs.x : ROAD_CENTER_X;
+    const perspX = Math.max(-16, Math.min(16, ((cameraCenterX - obsX) / LANE_WIDTH) * 12));
 
-    ctx.fillStyle = 'rgba(13, 12, 16, 0.75)';
-    ctx.beginPath();
-    ctx.moveTo(-hw + 22, -hh + 12);
-    ctx.lineTo(hw - 6, -hh + 12);
-    ctx.lineTo(hw + 9, hh + 12);
-    ctx.lineTo(-hw + 9, hh + 12);
-    ctx.closePath();
-    ctx.fill();
+    // 1. Soft 3D Ground Shadow
+    ctx.fillStyle = 'rgba(6, 5, 10, 0.80)';
+    this.fillRoundedRect(ctx, -hw - 4, -hh + 20, w + 8, h - 8, 12);
 
+    // 2. Left & Right Rear Tricycle Wheels & Mudguards
     ctx.fillStyle = '#14131A';
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 3.5;
-    this.fillRoundedRect(ctx, -hw - 4, hh - 34, 7, 22, 3);
-    this.strokeRoundedRect(ctx, -hw - 4, hh - 34, 7, 22, 3);
-    this.fillRoundedRect(ctx, hw - 3, hh - 34, 7, 22, 3);
-    this.strokeRoundedRect(ctx, hw - 3, hh - 34, 7, 22, 3);
+    this.fillRoundedRect(ctx, -hw - 3, hh - 20, 13, 24, 4);
+    this.strokeRoundedRect(ctx, -hw - 3, hh - 20, 13, 24, 4);
+    this.fillRoundedRect(ctx, hw - 10, hh - 20, 13, 24, 4);
+    this.strokeRoundedRect(ctx, hw - 10, hh - 20, 13, 24, 4);
 
-    ctx.fillStyle = '#FFCC00';
-    ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 4.5;
-    this.fillRoundedRect(ctx, -11, -hh - 7, 22, 24, 8);
-    this.strokeRoundedRect(ctx, -11, -hh - 7, 22, 24, 8);
+    // 3. 3D Side Open Passenger Entry Frame when Keke is in Left or Right lane
+    if (Math.abs(perspX) > 2.5) {
+      const isRightSide = perspX > 0;
+      const sideX = isRightSide ? hw - 4 : -hw - Math.abs(perspX);
+      const sideW = Math.abs(perspX) + 4;
+      ctx.fillStyle = '#D99B00';
+      ctx.strokeStyle = '#0D0C10';
+      ctx.lineWidth = 3.5;
+      this.fillRoundedRect(ctx, sideX, -hh + 18, sideW, h - 28, 8);
+      this.strokeRoundedRect(ctx, sideX, -hh + 18, sideW, h - 28, 8);
 
-    ctx.fillStyle = '#FFFDF7';
-    ctx.fillRect(-5, -hh - 6, 10, 5);
+      // Open side passenger arch
+      ctx.fillStyle = '#0F172A';
+      ctx.fillRect(
+        isRightSide ? hw - 1 : -hw - Math.abs(perspX) + 3,
+        -hh + 34,
+        Math.max(3, Math.abs(perspX) - 3),
+        38
+      );
+    }
 
-    const kekeGrad = ctx.createLinearGradient(-hw, 0, hw, 0);
-    kekeGrad.addColorStop(0, '#FFD633');
-    kekeGrad.addColorStop(0.5, '#FFCC00');
-    kekeGrad.addColorStop(1, '#D99B00');
-    ctx.fillStyle = kekeGrad;
+    // 4. Arched 3D Black Tarpaulin Roof Canopy (Upper half of Keke)
+    const canopyTopY = -hh + 6;
+    const canopyMidY = 6;
+    ctx.fillStyle = '#1E1D26';
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 5;
     ctx.beginPath();
-    ctx.moveTo(-hw + 14, -hh + 8);
-    ctx.lineTo(hw - 14, -hh + 8);
-    ctx.lineTo(hw, -hh + 38);
-    ctx.lineTo(hw, hh - 8);
-    ctx.quadraticCurveTo(hw, hh, hw - 10, hh);
-    ctx.lineTo(-hw + 10, hh);
-    ctx.quadraticCurveTo(-hw, hh, -hw, hh - 8);
-    ctx.lineTo(-hw, -hh + 38);
+    ctx.moveTo(-hw + 12, canopyTopY);
+    ctx.quadraticCurveTo(0, canopyTopY - 8, hw - 12, canopyTopY);
+    ctx.lineTo(hw - 2, canopyMidY);
+    ctx.lineTo(-hw + 2, canopyMidY);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
 
+    // Yellow top trim strip on tarpaulin roof
+    ctx.fillStyle = '#FFCC00';
+    ctx.fillRect(-hw + 14, canopyTopY + 4, w - 28, 6);
+
+    // Clear Rear Vinyl Window with Rider & Passenger Silhouettes
+    const winW = w - 26;
+    const winH = 28;
+    const winY = canopyTopY + 16;
     ctx.fillStyle = '#0F172A';
     ctx.strokeStyle = '#0D0C10';
     ctx.lineWidth = 3.5;
-    ctx.beginPath();
-    ctx.moveTo(-hw + 16, -hh + 14);
-    ctx.lineTo(hw - 16, -hh + 14);
-    ctx.lineTo(hw - 8, -hh + 32);
-    ctx.lineTo(-hw + 8, -hh + 32);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    this.fillRoundedRect(ctx, -winW / 2, winY, winW, winH, 6);
+    this.strokeRoundedRect(ctx, -winW / 2, winY, winW, winH, 6);
 
-    ctx.fillStyle = '#38BDF8';
+    ctx.fillStyle = '#334155';
     ctx.beginPath();
-    ctx.moveTo(-hw + 18, -hh + 16);
-    ctx.lineTo(-2, -hh + 16);
-    ctx.lineTo(-10, -hh + 30);
-    ctx.lineTo(-hw + 11, -hh + 30);
-    ctx.closePath();
+    ctx.arc(0, winY + 13, 7, 0, Math.PI * 2);
     ctx.fill();
+    ctx.fillRect(-10, winY + 19, 20, 8);
 
-    const canopyW = w - 14;
-    const canopyH = h - 54;
-    ctx.fillStyle = '#1E1D26';
+    // 5. Lower Yellow Steel Rear Tailgate & Engine Tub Facing Camera
+    const tubGrad = ctx.createLinearGradient(-hw, canopyMidY, hw, canopyMidY);
+    tubGrad.addColorStop(0, '#FFD633');
+    tubGrad.addColorStop(0.5, '#FFCC00');
+    tubGrad.addColorStop(1, '#D99B00');
+    ctx.fillStyle = tubGrad;
     ctx.strokeStyle = '#0D0C10';
-    ctx.lineWidth = 4.5;
-    this.fillRoundedRect(ctx, -canopyW / 2, -hh + 32, canopyW, canopyH, 10);
-    this.strokeRoundedRect(ctx, -canopyW / 2, -hh + 32, canopyW, canopyH, 10);
+    ctx.lineWidth = 5;
+    this.fillRoundedRect(ctx, -hw, canopyMidY - 2, w, hh - canopyMidY - 4, 10);
+    this.strokeRoundedRect(ctx, -hw, canopyMidY - 2, w, hh - canopyMidY - 4, 10);
 
-    ctx.strokeStyle = '#363445';
-    ctx.lineWidth = 3;
-    for (let cy = -hh + 48; cy < hh - 34; cy += 15) {
-      ctx.beginPath();
-      ctx.moveTo(-canopyW / 2 + 5, cy);
-      ctx.lineTo(canopyW / 2 - 5, cy);
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = '#FFCC00';
-    ctx.fillRect(-canopyW / 2 + 6, -hh + 38, canopyW - 12, 6);
-    ctx.fillRect(-canopyW / 2 + 6, hh - 35, canopyW - 12, 15);
-
+    // Slogan Banner Plate on Rear Tailgate ("GOD DEY", "NO TIME")
     ctx.fillStyle = '#0D0C10';
+    this.fillRoundedRect(ctx, -hw + 10, canopyMidY + 5, w - 20, 15, 4);
+    ctx.fillStyle = '#FFCC00';
     ctx.font = '900 9px "Inter", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(slogan, 0, hh - 27.5);
+    ctx.fillText(slogan, 0, canopyMidY + 13);
 
-    ctx.fillStyle = '#94A3B8';
-    ctx.fillRect(-hw + 10, hh - 11, w - 20, 4);
+    // Rear-Mounted Spare Keke Wheel on Tailgate
+    ctx.fillStyle = '#18181F';
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3.5;
+    ctx.beginPath();
+    ctx.arc(0, hh - 24, 13, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#FFCC00';
+    ctx.beginPath();
+    ctx.arc(0, hh - 24, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Left & Right Glowing Red Brake Lights & Chrome Bumper Bar
     ctx.fillStyle = '#FF2E2E';
-    ctx.fillRect(-hw + 8, hh - 7, 15, 6);
-    ctx.fillRect(hw - 23, hh - 7, 15, 6);
+    ctx.strokeStyle = '#0D0C10';
+    ctx.lineWidth = 3;
+    this.fillRoundedRect(ctx, -hw + 6, hh - 22, 16, 10, 3);
+    this.strokeRoundedRect(ctx, -hw + 6, hh - 22, 16, 10, 3);
+    this.fillRoundedRect(ctx, hw - 22, hh - 22, 16, 10, 3);
+    this.strokeRoundedRect(ctx, hw - 22, hh - 22, 16, 10, 3);
+
+    ctx.fillStyle = '#CBD5E1';
+    ctx.fillRect(-hw + 8, hh - 10, w - 16, 4);
   }
 
   private drawFallbackBarricade(ctx: CanvasRenderingContext2D, w: number, h: number) {

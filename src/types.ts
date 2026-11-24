@@ -193,6 +193,8 @@ export interface GameHUDData {
   boosterTimeRemaining: number; // seconds
   magnetTimeRemaining: number; // seconds
   isNewRecord: boolean;
+  canRevive: boolean;
+  reviveCost: number;
   isGameOver: boolean;
   isVictory: boolean;
 }
