@@ -552,8 +552,8 @@ export class AgberoGameEngine {
     moveTimer: 0,
     tauntText: BOSS_TAUNTS[0],
   };
-  private nextVipConvoyMilestone = 950; // Triggers every ~1,100m
-  private nextBossMilestone = 1800; // Triggers before stage checkpoints
+  private nextVipConvoyMilestone = 1350; // Triggers every ~1,400m
+  private nextBossMilestone = 2200; // Triggers before stage checkpoints
   private nextSpeechId = 1;
   private pidginBubbleCooldown = 4.5;
 
@@ -563,9 +563,9 @@ export class AgberoGameEngine {
   public sceneryScrollOffset = 0;
 
   // Gameplay progression & Multi-Stage Lagos Route
-  public baseScrollSpeed = 480; // Accessible starting speed (pixels per second)
-  public maxScrollSpeed = 1280; // Blazing Rush Hour peak speed
-  public currentScrollSpeed = 480;
+  public baseScrollSpeed = 420; // Comfortable, forgiving starting speed (pixels per second)
+  public maxScrollSpeed = 980; // Controlled, smooth Rush Hour top speed
+  public currentScrollSpeed = 420;
   public elapsedTime = 0;
   public difficultyLevel = 1; // 1 to 10 progressive difficulty tier
   public stageIndex = 1; // 1: 3rd Mainland, 2: Eko Bridge, 3: Lekki-Ikoyi Monsoon
@@ -595,12 +595,12 @@ export class AgberoGameEngine {
   private nextCollectibleId = 1;
   private nextHazardId = 1;
   private nextCalloutId = 1;
-  private distanceSinceLastWave = 420;
+  private distanceSinceLastWave = 360;
   private distanceSinceLastPowerUp = 150;
   private distanceSinceLastCollectible = 0;
   private distanceSinceLastHazard = 0;
-  private nextPowerUpThreshold = 3400;
-  private currentWaveSpacing = 650;
+  private nextPowerUpThreshold = 2300;
+  private currentWaveSpacing = 760;
   private lastOpenLane: LaneIndex = 1;
   public gracePeriodSeconds = 1.5;
 
@@ -796,8 +796,8 @@ export class AgberoGameEngine {
       moveTimer: 0,
       tauntText: BOSS_TAUNTS[0],
     };
-    this.nextVipConvoyMilestone = 950;
-    this.nextBossMilestone = 1800;
+    this.nextVipConvoyMilestone = 1350;
+    this.nextBossMilestone = 2200;
     this.pidginBubbleCooldown = 4.5;
     this.roadScrollOffset = 0;
     this.barrierScrollOffset = 0;
@@ -829,12 +829,12 @@ export class AgberoGameEngine {
     this.difficultyLevel = 1;
     this.stageIndex = 1;
     this.nextStageMilestone = this.stageDistanceLeg;
-    this.distanceSinceLastWave = 420;
+    this.distanceSinceLastWave = 360;
     this.distanceSinceLastPowerUp = 150;
     this.distanceSinceLastCollectible = 0;
     this.distanceSinceLastHazard = 0;
-    this.nextPowerUpThreshold = 3400;
-    this.currentWaveSpacing = 650;
+    this.nextPowerUpThreshold = 2300;
+    this.currentWaveSpacing = 760;
     this.lastOpenLane = 1;
     this.isGameOver = false;
     this.isVictory = false;
@@ -1064,9 +1064,9 @@ export class AgberoGameEngine {
       } else {
         this.player.wheelieTime = 0;
       }
-      // Passive horn charge (fills in ~12 seconds, plus +25% per near-miss)
+      // Passive horn charge (fills in ~8 seconds, plus +30% per near-miss)
       if (this.hornCharge < 100) {
-        this.hornCharge = Math.min(100, this.hornCharge + safeDt * 8.5);
+        this.hornCharge = Math.min(100, this.hornCharge + safeDt * 12.5);
       }
       // Ambient Lagos Pidgin Slang Speech Bubbles (spaced out so canvas stays clean)
       this.pidginBubbleCooldown -= safeDt;
@@ -1087,12 +1087,12 @@ export class AgberoGameEngine {
         : 1.0;
     const wheelieMultiplier = this.player.isWheelie ? 2.0 : 1.0;
 
-    // Progressive Difficulty Scaling over Time & Distance
+    // Progressive Difficulty Scaling over Time & Distance (Smooth, forgiving ramp over 140s / 4,500m)
     const activeRunTime = isActive ? Math.max(0, this.elapsedTime - this.gracePeriodSeconds) : 0;
-    const timeFactor = Math.min(1, activeRunTime / 80);
-    const distFactor = Math.min(1, this.distanceTraveled / 3000);
+    const timeFactor = Math.min(1, activeRunTime / 140);
+    const distFactor = Math.min(1, this.distanceTraveled / 4500);
     const difficultyProgress = isActive
-      ? Math.min(1, timeFactor * 0.65 + distFactor * 0.35)
+      ? Math.min(1, timeFactor * 0.55 + distFactor * 0.45)
       : 0;
 
     const newLevel = Math.min(10, 1 + Math.floor(difficultyProgress * 9));
@@ -1120,7 +1120,7 @@ export class AgberoGameEngine {
     const targetBaseSpeed =
       this.baseScrollSpeed + (this.maxScrollSpeed - this.baseScrollSpeed) * difficultyProgress;
     this.currentScrollSpeed = targetBaseSpeed * boostMultiplier;
-    this.currentWaveSpacing = 660 - difficultyProgress * 245;
+    this.currentWaveSpacing = 780 - difficultyProgress * 220;
 
     const frameScroll = this.currentScrollSpeed * safeDt;
     // Continuous unwrapped scroll accumulators prevent any modular jump / road snapping in 3D!
@@ -1347,12 +1347,12 @@ export class AgberoGameEngine {
         this.spawnRoadHazard();
       }
 
-      // Tactical Power-Up Spawning
+      // Tactical Power-Up Spawning (More frequent so players regularly get Shields, Nitro & Magnets)
       if (this.powerUps.length === 0 && this.boosterTimeRemaining <= 0) {
         this.distanceSinceLastPowerUp += frameScroll;
         if (this.distanceSinceLastPowerUp >= this.nextPowerUpThreshold) {
           this.distanceSinceLastPowerUp = 0;
-          this.nextPowerUpThreshold = 3400 + Math.random() * 1500 + difficultyProgress * 800;
+          this.nextPowerUpThreshold = 2300 + Math.random() * 900 + difficultyProgress * 500;
           this.spawnPowerUp();
         }
       }
@@ -1481,9 +1481,9 @@ export class AgberoGameEngine {
     }
 
     // Update obstacles, Lane-Switching Danfo AI & check collisions
-    const hitboxShrink = 0.8;
-    const playerHalfW = (this.player.width * hitboxShrink) / 2;
-    const playerHalfH = (this.player.height * hitboxShrink) / 2;
+    // Forgiving 3D hitbox (65% width, 54% height) so slight visual overlaps with 3D bus roofs/hoods never cause unfair crashes
+    const playerHalfW = (this.player.width * 0.65) / 2;
+    const playerHalfH = (this.player.height * 0.54) / 2;
 
     for (let i = this.obstacles.length - 1; i >= 0; i--) {
       const obs = this.obstacles[i];
@@ -1503,8 +1503,8 @@ export class AgberoGameEngine {
         });
       }
 
-      // Lane-Switching Danfo Blinker & Swerve AI
-      if (obs.laneSwitchDirection !== 0 && !obs.hasSwitchedLane && obs.y > -40 && obs.y < 230) {
+      // Lane-Switching Danfo Blinker & Swerve AI (Only switches high up the road y < 140 so player has plenty of time to react)
+      if (obs.laneSwitchDirection !== 0 && !obs.hasSwitchedLane && obs.y > -80 && obs.y < 140) {
         if (obs.blinkerTimer > 0) {
           obs.blinkerTimer = Math.max(0, obs.blinkerTimer - safeDt);
           if (obs.blinkerTimer === 0) {
@@ -1513,7 +1513,7 @@ export class AgberoGameEngine {
               (other) =>
                 other.id !== obs.id &&
                 (other.lane === obs.targetLane || other.targetLane === obs.targetLane) &&
-                Math.abs(other.y - obs.y) < 340
+                Math.abs(other.y - obs.y) < 380
             );
             const otherThirdLane = ([0, 1, 2] as LaneIndex[]).find(
               (l) => l !== obs.lane && l !== obs.targetLane
@@ -1522,10 +1522,10 @@ export class AgberoGameEngine {
               (other) =>
                 other.id !== obs.id &&
                 (other.lane === otherThirdLane || other.targetLane === otherThirdLane) &&
-                Math.abs(other.y - obs.y) < 380
+                Math.abs(other.y - obs.y) < 420
             );
 
-            if (!targetBlocked && !thirdLaneBlockedNearby) {
+            if (!targetBlocked && !thirdLaneBlockedNearby && obs.y < 115) {
               obs.isSwitchingLane = true;
               obs.lane = obs.targetLane;
               soundFX.playDanfoHorn();
@@ -1540,7 +1540,7 @@ export class AgberoGameEngine {
       if (obs.isSwitchingLane) {
         const targetX = LANE_CENTERS[obs.targetLane];
         const diffX = targetX - obs.x;
-        obs.x += diffX * Math.min(1, 7.5 * safeDt);
+        obs.x += diffX * Math.min(1, 6.2 * safeDt);
         if (Math.abs(diffX) < 2) {
           obs.x = targetX;
           obs.isSwitchingLane = false;
@@ -1550,8 +1550,8 @@ export class AgberoGameEngine {
       }
 
       const obsCenterX = obs.x;
-      const obsHalfW = (obs.width * hitboxShrink) / 2;
-      const obsHalfH = (obs.height * hitboxShrink) / 2;
+      const obsHalfW = (obs.width * 0.66) / 2;
+      const obsHalfH = (obs.height * 0.54) / 2;
 
       const distX = Math.abs(this.player.x - obsCenterX);
       const distY = Math.abs(this.player.y - obs.y);
@@ -1675,7 +1675,7 @@ export class AgberoGameEngine {
     this.vipConvoy = {
       active: true,
       lane,
-      warningTimer: 2.0,
+      warningTimer: 2.75,
       y: LOGICAL_HEIGHT + 240,
       sirenPhase: 0,
     };
@@ -1818,13 +1818,13 @@ export class AgberoGameEngine {
       // Drop hazard barricade / market crate from rear of Boss Danfo
       this.bossDanfo.throwTimer -= dt;
       if (this.bossDanfo.throwTimer <= 0) {
-        this.bossDanfo.throwTimer = 1.95;
+        this.bossDanfo.throwTimer = 2.45;
         const dropLane = this.bossDanfo.lane;
         const dropY = this.bossDanfo.y + 100;
         // Guarantee at least one adjacent escape lane is completely clear around dropY!
         const occupiedLanesNearDrop = new Set<number>();
         for (const o of this.obstacles) {
-          if (Math.abs(o.y - dropY) < 340) {
+          if (Math.abs(o.y - dropY) < 380) {
             occupiedLanesNearDrop.add(o.lane);
             occupiedLanesNearDrop.add(o.targetLane);
           }
@@ -1847,7 +1847,7 @@ export class AgberoGameEngine {
             y: dropY,
             width: 112,
             height: 60,
-            speedMultiplier: 0.78,
+            speedMultiplier: 0.72,
             passed: false,
             nearMissed: false,
             label: 'BOSS CRATE',
@@ -1905,7 +1905,7 @@ export class AgberoGameEngine {
   }
 
   private enforceTrafficSpacing(_dt: number) {
-    const minSameLaneGap = 245;
+    const minSameLaneGap = 285;
     for (let lane = 0; lane < 3; lane++) {
       const laneObs = this.obstacles
         .filter((o) => o.lane === lane)
@@ -1914,7 +1914,7 @@ export class AgberoGameEngine {
       for (let i = 1; i < laneObs.length; i++) {
         const ahead = laneObs[i - 1];
         const behind = laneObs[i];
-        const minAllowedY = ahead.y - (ahead.height / 2 + behind.height / 2 + 150);
+        const minAllowedY = ahead.y - (ahead.height / 2 + behind.height / 2 + 185);
         if (behind.y > minAllowedY || ahead.y - behind.y < minSameLaneGap) {
           behind.y = Math.min(behind.y, minAllowedY);
           behind.speedMultiplier = Math.min(behind.speedMultiplier, ahead.speedMultiplier);
@@ -1923,14 +1923,14 @@ export class AgberoGameEngine {
     }
 
     // Escape-Path Guarantee Solver ("Always a Way Out"):
-    // If differential speeds ever cause all 3 lanes to become occupied within a 280px vertical corridor
-    // ahead of the player, automatically hold back the highest-up vehicle to carve a guaranteed 290px slalom gap!
+    // If differential speeds ever cause all 3 lanes to become occupied within a 340px vertical corridor
+    // ahead of the player, automatically hold back the highest-up vehicle to carve a wide 360px slalom gap!
     for (const anchor of this.obstacles) {
-      if (anchor.y > this.player.y + 80 || anchor.y < -420) continue;
+      if (anchor.y > this.player.y + 80 || anchor.y < -450) continue;
 
       const laneBlockers: Array<Obstacle | null> = [null, null, null];
       for (const other of this.obstacles) {
-        if (Math.abs(other.y - anchor.y) < 275) {
+        if (Math.abs(other.y - anchor.y) < 340) {
           const existing = laneBlockers[other.lane];
           if (!existing || Math.abs(other.y - anchor.y) < Math.abs(existing.y - anchor.y)) {
             laneBlockers[other.lane] = other;
@@ -1959,8 +1959,8 @@ export class AgberoGameEngine {
               ? Math.min(...remaining.map((o) => o.y))
               : anchor.y;
 
-          toPushBack.y = Math.min(toPushBack.y, minRemainingY - 305);
-          toPushBack.speedMultiplier = Math.min(toPushBack.speedMultiplier, 0.58);
+          toPushBack.y = Math.min(toPushBack.y, minRemainingY - 365);
+          toPushBack.speedMultiplier = Math.min(toPushBack.speedMultiplier, 0.56);
           toPushBack.isSwitchingLane = false;
           toPushBack.laneSwitchDirection = 0;
         }
@@ -2077,7 +2077,8 @@ export class AgberoGameEngine {
       candidateObstacleLanes.reverse();
     }
 
-    const twoLaneProbability = 0.16 + difficulty * 0.54;
+    // Early game is mostly 1 vehicle per wave; 2-vehicle waves ramp up gradually later in the run
+    const twoLaneProbability = 0.08 + difficulty * 0.42;
     const desiredCount = Math.min(
       candidateObstacleLanes.length,
       Math.random() < twoLaneProbability ? 2 : 1
@@ -2086,14 +2087,14 @@ export class AgberoGameEngine {
     for (let i = 0; i < desiredCount; i++) {
       const lane = candidateObstacleLanes[i];
       const sameLaneBlocked = this.obstacles.some(
-        (existing) => existing.lane === lane && existing.y < 190
+        (existing) => existing.lane === lane && existing.y < 230
       );
       if (sameLaneBlocked) continue;
 
       const type = this.pickObstacleType(difficulty, i);
       const spec = this.getObstacleSpec(type, difficulty);
-      // Stagger 2-vehicle waves vertically by 210-290px so the player can always weave diagonally between them!
-      const staggerOffset = i === 1 ? -(210 + Math.random() * 80) : 0;
+      // Stagger 2-vehicle waves vertically by 260-340px so the player can easily weave diagonally between them!
+      const staggerOffset = i === 1 ? -(260 + Math.random() * 80) : 0;
       const spawnY = -spec.height / 2 - 60 + staggerOffset;
 
       // Ensure spawning this vehicle does not create a 3-lane blockade with any existing vehicles near spawnY
@@ -2102,7 +2103,7 @@ export class AgberoGameEngine {
         occupiedLanesNearSpawn.add(vipBlockedLane);
       }
       for (const existing of this.obstacles) {
-        if (Math.abs(existing.y - spawnY) < 285) {
+        if (Math.abs(existing.y - spawnY) < 345) {
           occupiedLanesNearSpawn.add(existing.lane);
           occupiedLanesNearSpawn.add(existing.targetLane);
         }
@@ -2116,7 +2117,7 @@ export class AgberoGameEngine {
       );
       if (overlapsPowerUp) continue;
 
-      // Determine if this Danfo will signal and switch lanes (only on single-vehicle waves at difficulty > 0.25)
+      // Determine if this Danfo will signal and switch lanes (only on single-vehicle waves at difficulty > 0.30)
       let laneSwitchDirection: -1 | 0 | 1 = 0;
       let targetLane: LaneIndex = lane;
       let blinkerTimer = 0;
@@ -2124,8 +2125,8 @@ export class AgberoGameEngine {
       if (
         type === 'DANFO' &&
         desiredCount === 1 &&
-        difficulty > 0.22 &&
-        Math.random() < 0.32
+        difficulty > 0.30 &&
+        Math.random() < 0.24
       ) {
         const possibleTargets = allLanes.filter(
           (l) => Math.abs(l - lane) === 1 && l !== vipBlockedLane
@@ -2133,7 +2134,7 @@ export class AgberoGameEngine {
         if (possibleTargets.length > 0) {
           targetLane = possibleTargets[Math.floor(Math.random() * possibleTargets.length)];
           laneSwitchDirection = (targetLane - lane) as -1 | 1;
-          blinkerTimer = 1.05; // Flashes amber turn signal for >1 second before swerving
+          blinkerTimer = 1.25; // Flashes amber turn signal for 1.25s before swerving early up the road
         }
       }
 
